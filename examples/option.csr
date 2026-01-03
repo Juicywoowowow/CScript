@@ -1,0 +1,59 @@
+// option.csr - Option types for null safety
+// Demonstrates: Option<T>, match, unwrap, none
+
+#include <stdio.h>
+#include <stdlib.h>
+
+struct User {
+    int id;
+    char* name;
+};
+
+// Function that may or may not find a user
+Option<struct User*> find_user(int id) {
+    // Simulate a database lookup
+    if (id == 1) {
+        struct User* user = (struct User*)malloc(sizeof(struct User));
+        user->id = 1;
+        user->name = "Alice";
+        return user;  // Implicitly wrapped in Option
+    }
+    return none;  // Explicit none value
+}
+
+void print_user(struct User* user) {
+    printf("User { id: %d, name: %s }\n", user->id, user->name);
+}
+
+int main() {
+    // Try to find existing user
+    Option<struct User*> result1 = find_user(1);
+    
+    // Pattern matching on Option
+    match (result1) {
+        some(user) => {
+            printf("Found: ");
+            print_user(user);
+            free(user);
+        }
+        none => {
+            printf("User not found\n");
+        }
+    }
+    
+    // Try to find non-existing user
+    Option<struct User*> result2 = find_user(999);
+    
+    match (result2) {
+        some(user) => {
+            printf("Found: ");
+            print_user(user);
+            free(user);
+        }
+        none => {
+            printf("User 999 not found\n");
+        }
+    }
+    
+    return 0;
+}

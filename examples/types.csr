@@ -1,0 +1,32 @@
+// types.csr - CScript type system demo
+// Demonstrates: strict typing, explicit casts, CScript types
+
+#include <stdio.h>
+#include <stdint.h>
+
+int main() {
+    // CScript fixed-width types (map to stdint.h)
+    int32 x = 42;
+    int64 big = (int64)9223372036854775807;
+    uint8 byte_val = (uint8)255;
+    float64 pi = 3.14159265358979;
+    
+    // Boolean type (not 0/1 like C)
+    bool is_valid = true;
+    
+    // Explicit casts required (no implicit conversion)
+    float32 f = (float32)x;  // Must cast int to float
+    int narrowed = (int)big;  // Must cast explicitly
+    
+    // Print values
+    printf("int32: %d\n", x);
+    printf("int64: %lld\n", big);
+    printf("uint8: %u\n", byte_val);
+    printf("float64: %f\n", pi);
+    printf("bool: %s\n", is_valid ? "true" : "false");
+    printf("casted float: %f\n", f);
+    printf("narrowed: %d\n", narrowed);
+    
+    return 0;
+}
+

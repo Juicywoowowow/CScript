@@ -1,0 +1,41 @@
+// structs.csr - Struct definitions in CScript
+// Demonstrates: structs, designated initializers
+
+#include <stdio.h>
+
+struct Point {
+    int x;
+    int y;
+};
+
+struct Rectangle {
+    int x;
+    int y;
+    int width;
+    int height;
+};
+
+int main() {
+    // Designated initializer syntax
+    struct Point p1 = { .x = 0, .y = 0 };
+    struct Point p2 = { .x = 3, .y = 4 };
+    
+    struct Rectangle rect = {
+        .x = 10,
+        .y = 20,
+        .width = 100,
+        .height = 50
+    };
+    
+    // Access struct members
+    mut int dx = p2.x - p1.x;
+    mut int dy = p2.y - p1.y;
+    
+    printf("Point 1: (%d, %d)\n", p1.x, p1.y);
+    printf("Point 2: (%d, %d)\n", p2.x, p2.y);
+    printf("Delta: (%d, %d)\n", dx, dy);
+    printf("Rectangle at (%d, %d), size %dx%d\n", 
+        rect.x, rect.y, rect.width, rect.height);
+    
+    return 0;
+}

@@ -1,0 +1,35 @@
+[package]
+name = "cscript"
+version = "0.1.0"
+edition = "2021"
+authors = ["CScript Team"]
+description = "A strongly statically typed superset of C that transpiles to C"
+license = "MIT"
+repository = "https://github.com/Juicywoowowow/CScript"
+keywords = ["compiler", "transpiler", "c", "static-typing"]
+categories = ["compilers", "development-tools"]
+
+[dependencies]
+# CLI argument parsing
+clap = { version = "4.4", features = ["derive"] }
+# Colored terminal output for diagnostics
+colored = "2.1"
+# Unicode handling
+unicode-xid = "0.2"
+
+[dev-dependencies]
+# Testing utilities
+pretty_assertions = "1.4"
+
+[[bin]]
+name = "csc"
+path = "src/main.rs"
+
+[lib]
+name = "cscript"
+path = "src/lib.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

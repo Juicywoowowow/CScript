@@ -1,0 +1,39 @@
+// mutability.csr - Immutability demo
+// Demonstrates: default immutability, mut keyword
+
+#include <stdio.h>
+
+// Function with mutable parameter
+void increment(mut int* value) {
+    *value = *value + 1;
+}
+
+// Function with immutable parameter (default)
+int double_value(int x) {
+    // x = x * 2;  // ERROR: cannot mutate immutable parameter
+    return x * 2;
+}
+
+int main() {
+    // Immutable by default - must be initialized
+    int max_iterations = 100;
+    int multiplier = 2;
+    
+    // Cannot reassign immutable variables:
+    // max_iterations = 200;  // ERROR: cannot assign to immutable variable
+    
+    // Mutable variable - can be reassigned
+    mut int counter = 0;
+    mut int total = 0;
+    
+    while (counter < 10) {
+        total = total + counter * multiplier;
+        increment(&counter);
+    }
+    
+    printf("Final counter: %d\n", counter);
+    printf("Total sum: %d\n", total);
+    printf("Doubled max: %d\n", double_value(max_iterations));
+    
+    return 0;
+}

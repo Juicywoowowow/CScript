@@ -1,0 +1,19 @@
+// hello.csr - Basic CScript example
+// Demonstrates: functions, variables, immutable by default
+
+#include <stdio.h>
+
+int main() {
+    // Immutable variable - cannot be reassigned
+    int message_count = 5;
+    
+    // Mutable variable - can be reassigned
+    mut int counter = 0;
+    
+    while (counter < message_count) {
+        printf("Hello, CScript! (%d)\n", counter);
+        counter = counter + 1;
+    }
+    
+    return 0;
+}
