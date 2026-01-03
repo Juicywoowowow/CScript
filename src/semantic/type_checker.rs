@@ -404,45 +404,94 @@ impl<'a> TypeChecker<'a> {
             }
 
             Stmt::Match { expr, arms } => {
-                // Verify expr is an Option type and extract inner type
-                let inner_type = if let Some(expr_type) = self.check_expr(expr) {
-                    if !expr_type.is_option() {
+                // Verify expr is an Option or Result type and extract inner types
+                let (ok_type, err_type) = if let Some(expr_type) = self.check_expr(expr) {
+                    if expr_type.is_option() {
+                        if let BaseType::Option(inner) = &expr_type.base {
+                            (Some(inner.as_ref().clone()), None)
+                        } else {
+                            (None, None)
+                        }
+                    } else if expr_type.is_result() {
+                        if let BaseType::Result(ok, err) = &expr_type.base {
+                            (Some(ok.as_ref().clone()), Some(err.as_ref().clone()))
+                        } else {
+                            (None, None)
+                        }
+                    } else {
                         self.reporter.add(
                             Diagnostic::error(codes::TYPE_MISMATCH,
-                                "match expression must be an Option type")
+                                "match expression must be an Option or Result type")
                         );
-                        None
-                    } else if let BaseType::Option(inner) = &expr_type.base {
-                        Some(inner.as_ref().clone())
-                    } else {
-                        None
+                        (None, None)
                     }
                 } else {
-                    None
+                    (None, None)
                 };
 
                 for arm in arms {
                     self.symbols.push_scope(None);
                     
-                    if let MatchPattern::Some(ref name) = arm.pattern {
-                        // Bind the unwrapped value with the correct inner type
-                        let bound_type = inner_type.clone().unwrap_or(TypeSpec {
-                            base: BaseType::Void,
-                            pointer_depth: 1,
-                            is_const: false,
-                            is_volatile: false,
-                        });
-                        
-                        let symbol = Symbol {
-                            name: name.clone(),
-                            kind: SymbolKind::Variable,
-                            type_spec: bound_type,
-                            is_mutable: false,
-                            is_initialized: true,
-                            is_used: false,
-                            offset: 0,
-                        };
-                        let _ = self.symbols.define(symbol);
+                    match &arm.pattern {
+                        MatchPattern::Some(name) => {
+                            // Bind the unwrapped value with the correct inner type
+                            let bound_type = ok_type.clone().unwrap_or(TypeSpec {
+                                base: BaseType::Void,
+                                pointer_depth: 1,
+                                is_const: false,
+                                is_volatile: false,
+                            });
+                            
+                            let symbol = Symbol {
+                                name: name.clone(),
+                                kind: SymbolKind::Variable,
+                                type_spec: bound_type,
+                                is_mutable: false,
+                                is_initialized: true,
+                                is_used: false,
+                                offset: 0,
+                            };
+                            let _ = self.symbols.define(symbol);
+                        }
+                        MatchPattern::Ok(name) => {
+                            let bound_type = ok_type.clone().unwrap_or(TypeSpec {
+                                base: BaseType::Void,
+                                pointer_depth: 1,
+                                is_const: false,
+                                is_volatile: false,
+                            });
+                            
+                            let symbol = Symbol {
+                                name: name.clone(),
+                                kind: SymbolKind::Variable,
+                                type_spec: bound_type,
+                                is_mutable: false,
+                                is_initialized: true,
+                                is_used: false,
+                                offset: 0,
+                            };
+                            let _ = self.symbols.define(symbol);
+                        }
+                        MatchPattern::Err(name) => {
+                            let bound_type = err_type.clone().unwrap_or(TypeSpec {
+                                base: BaseType::Void,
+                                pointer_depth: 1,
+                                is_const: false,
+                                is_volatile: false,
+                            });
+                            
+                            let symbol = Symbol {
+                                name: name.clone(),
+                                kind: SymbolKind::Variable,
+                                type_spec: bound_type,
+                                is_mutable: false,
+                                is_initialized: true,
+                                is_used: false,
+                                offset: 0,
+                            };
+                            let _ = self.symbols.define(symbol);
+                        }
+                        MatchPattern::None => {}
                     }
                     
                     self.check_block(&arm.body);
@@ -455,12 +504,12 @@ impl<'a> TypeChecker<'a> {
                 if let Some(ref expected_ret_type) = ret_type {
                     let is_void = matches!(expected_ret_type.base, BaseType::Void);
                     let is_option = expected_ret_type.is_option();
+                    let is_result = expected_ret_type.is_result();
                     
                     match (expr, is_void) {
                         (Some(e), false) => {
                             if let Some(expr_type) = self.check_expr(e) {
                                 // Check for implicit Option wrapping
-                                // If function returns Option<T> and we have T, that's OK
                                 let compatible = if is_option {
                                     if let BaseType::Option(inner) = &expected_ret_type.base {
                                         // Allow both T and Option<T> as return values
@@ -468,6 +517,15 @@ impl<'a> TypeChecker<'a> {
                                         self.types_compatible(inner.as_ref(), &expr_type)
                                     } else {
                                         self.types_compatible(expected_ret_type, &expr_type)
+                                    }
+                                } else if is_result {
+                                    // For Result<T, E>, allow:
+                                    // - ok(T) returns
+                                    // - err(E) returns
+                                    // - Result<T, E> returns
+                                    match e {
+                                        Expr::Ok(_) | Expr::Err(_) => true,
+                                        _ => self.types_compatible(expected_ret_type, &expr_type)
                                     }
                                 } else {
                                     self.types_compatible(expected_ret_type, &expr_type)
@@ -749,6 +807,47 @@ impl<'a> TypeChecker<'a> {
             Expr::Member { object, member } => {
                 let obj_type = self.check_expr(object)?;
                 
+                // Handle Option type field access
+                if let BaseType::Option(inner) = &obj_type.base {
+                    match member.as_str() {
+                        "is_some" => return Some(TypeSpec {
+                            base: BaseType::Bool,
+                            pointer_depth: 0,
+                            is_const: false,
+                            is_volatile: false,
+                        }),
+                        "value" => return Some((**inner).clone()),
+                        _ => {
+                            self.reporter.add(
+                                Diagnostic::error(codes::TYPE_MISMATCH,
+                                    format!("Option type has no field '{}'", member))
+                            );
+                            return None;
+                        }
+                    }
+                }
+                
+                // Handle Result type field access
+                if let BaseType::Result(ok_type, err_type) = &obj_type.base {
+                    match member.as_str() {
+                        "is_ok" => return Some(TypeSpec {
+                            base: BaseType::Bool,
+                            pointer_depth: 0,
+                            is_const: false,
+                            is_volatile: false,
+                        }),
+                        "ok_value" => return Some((**ok_type).clone()),
+                        "err_value" => return Some((**err_type).clone()),
+                        _ => {
+                            self.reporter.add(
+                                Diagnostic::error(codes::TYPE_MISMATCH,
+                                    format!("Result type has no field '{}'", member))
+                            );
+                            return None;
+                        }
+                    }
+                }
+                
                 // Get struct name from the object type
                 let struct_name = match &obj_type.base {
                     BaseType::Struct(name) => name.clone(),
@@ -886,17 +985,25 @@ impl<'a> TypeChecker<'a> {
             Expr::Unwrap(expr) => {
                 let expr_type = self.check_expr(expr)?;
                 
-                if !expr_type.is_option() {
+                if expr_type.is_option() {
+                    // Return inner type for Option
+                    if let BaseType::Option(inner) = &expr_type.base {
+                        Some(inner.as_ref().clone())
+                    } else {
+                        None
+                    }
+                } else if expr_type.is_result() {
+                    // Return Ok type for Result
+                    if let BaseType::Result(ok_type, _) = &expr_type.base {
+                        Some(ok_type.as_ref().clone())
+                    } else {
+                        None
+                    }
+                } else {
                     self.reporter.add(
                         Diagnostic::error(codes::TYPE_MISMATCH,
-                            ".unwrap() can only be used on Option types")
+                            ".unwrap() can only be used on Option or Result types")
                     );
-                }
-                
-                // Return inner type
-                if let BaseType::Option(inner) = &expr_type.base {
-                    Some(inner.as_ref().clone())
-                } else {
                     None
                 }
             }
@@ -955,6 +1062,110 @@ impl<'a> TypeChecker<'a> {
                     is_const: false,
                     is_volatile: false,
                 })
+            }
+            
+            Expr::Ok(value) => {
+                // ok(value) creates a Result - type depends on context
+                // For now, infer from the value type
+                let value_type = self.check_expr(value)?;
+                // Return a placeholder - actual Result type will be inferred from context
+                Some(value_type)
+            }
+            
+            Expr::Err(value) => {
+                // err(value) creates a Result - type depends on context
+                let value_type = self.check_expr(value)?;
+                Some(value_type)
+            }
+            
+            Expr::Try { expr, span } => {
+                let expr_type = self.check_expr(expr)?;
+                
+                if !expr_type.is_result() {
+                    self.reporter.report_with_label(
+                        Diagnostic::error(codes::TYPE_MISMATCH,
+                            "'?' operator can only be used on Result types"),
+                        span.offset,
+                        span.length,
+                        "not a Result type"
+                    );
+                    return None;
+                }
+                
+                // Check that we're in a function that returns Result
+                if let Some(ref ret_type) = self.current_return_type {
+                    if !ret_type.is_result() {
+                        self.reporter.report_with_label(
+                            Diagnostic::error(codes::TYPE_MISMATCH,
+                                "'?' operator can only be used in functions that return Result"),
+                            span.offset,
+                            span.length,
+                            "function does not return Result"
+                        );
+                    }
+                }
+                
+                // Return the Ok type (unwrapped)
+                if let BaseType::Result(ok_type, _) = &expr_type.base {
+                    Some(ok_type.as_ref().clone())
+                } else {
+                    None
+                }
+            }
+            
+            Expr::IsOk(expr) => {
+                let expr_type = self.check_expr(expr)?;
+                
+                if !expr_type.is_result() {
+                    self.reporter.add(
+                        Diagnostic::error(codes::TYPE_MISMATCH,
+                            ".is_ok() can only be used on Result types")
+                    );
+                }
+                
+                Some(TypeSpec {
+                    base: BaseType::Bool,
+                    pointer_depth: 0,
+                    is_const: false,
+                    is_volatile: false,
+                })
+            }
+            
+            Expr::IsErr(expr) => {
+                let expr_type = self.check_expr(expr)?;
+                
+                if !expr_type.is_result() {
+                    self.reporter.add(
+                        Diagnostic::error(codes::TYPE_MISMATCH,
+                            ".is_err() can only be used on Result types")
+                    );
+                }
+                
+                Some(TypeSpec {
+                    base: BaseType::Bool,
+                    pointer_depth: 0,
+                    is_const: false,
+                    is_volatile: false,
+                })
+            }
+            
+            Expr::UnwrapErr(expr) => {
+                let expr_type = self.check_expr(expr)?;
+                
+                if !expr_type.is_result() {
+                    self.reporter.add(
+                        Diagnostic::error(codes::TYPE_MISMATCH,
+                            ".unwrap_err() can only be used on Result types")
+                    );
+                    return None;
+                }
+                
+                // Return the Err type
+                if let BaseType::Result(_, err_type) = &expr_type.base {
+                    Some(err_type.as_ref().clone())
+                } else {
+                    None
+                }
             }
         }
     }
@@ -1126,6 +1337,11 @@ impl<'a> TypeChecker<'a> {
             
             // Void is compatible with any Option (for 'none' literal)
             (Void, Option(_)) | (Option(_), Void) => true,
+            
+            // Result types - compare both inner types
+            (Result(ok_a, err_a), Result(ok_b, err_b)) => {
+                self.types_compatible(ok_a, ok_b) && self.types_compatible(err_a, err_b)
+            }
             
             _ => false,
         }

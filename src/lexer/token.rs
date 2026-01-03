@@ -86,8 +86,11 @@ pub enum TokenKind {
     // CScript-specific keywords
     Mut,        // mutable variable
     Option,     // nullable wrapper
+    Result,     // error handling wrapper
     None,       // null value for Option
     Some,       // unwrap Option
+    Ok,         // success value for Result
+    Err,        // error value for Result
     Match,      // pattern matching
     True,
     False,
@@ -182,7 +185,7 @@ impl TokenKind {
     pub fn can_start_declaration(&self) -> bool {
         self.is_type_keyword() || matches!(self, 
             TokenKind::Mut | TokenKind::Static | TokenKind::Extern | 
-            TokenKind::Typedef | TokenKind::Option | TokenKind::Volatile |
+            TokenKind::Typedef | TokenKind::Option | TokenKind::Result | TokenKind::Volatile |
             TokenKind::Inline
         )
     }  
@@ -243,8 +246,11 @@ pub fn lookup_keyword(ident: &str) -> Option<TokenKind> {
         // CScript keywords
         "mut" => Some(TokenKind::Mut),
         "Option" => Some(TokenKind::Option),
+        "Result" => Some(TokenKind::Result),
         "none" => Some(TokenKind::None),
         "some" => Some(TokenKind::Some),
+        "ok" => Some(TokenKind::Ok),
+        "err" => Some(TokenKind::Err),
         "match" => Some(TokenKind::Match),
         "true" => Some(TokenKind::True),
         "false" => Some(TokenKind::False),

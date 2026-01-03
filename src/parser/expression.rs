@@ -432,6 +432,18 @@ impl<'a> Parser<'a> {
                     self.advance(); // consume '('
                     self.expect(TokenKind::RightParen, "expected ')' after is_none")?;
                     expr = Expr::IsNone(Box::new(expr));
+                } else if member == "is_ok" && self.check(TokenKind::LeftParen) {
+                    self.advance(); // consume '('
+                    self.expect(TokenKind::RightParen, "expected ')' after is_ok")?;
+                    expr = Expr::IsOk(Box::new(expr));
+                } else if member == "is_err" && self.check(TokenKind::LeftParen) {
+                    self.advance(); // consume '('
+                    self.expect(TokenKind::RightParen, "expected ')' after is_err")?;
+                    expr = Expr::IsErr(Box::new(expr));
+                } else if member == "unwrap_err" && self.check(TokenKind::LeftParen) {
+                    self.advance(); // consume '('
+                    self.expect(TokenKind::RightParen, "expected ')' after unwrap_err")?;
+                    expr = Expr::UnwrapErr(Box::new(expr));
                 } else {
                     expr = Expr::Member {
                         object: Box::new(expr),
@@ -456,6 +468,13 @@ impl<'a> Parser<'a> {
                 expr = Expr::Unary {
                     op: UnaryOp::PostDec,
                     operand: Box::new(expr),
+                };
+            } else if self.match_token(TokenKind::Question) {
+                // Try operator (?) for Result error propagation
+                let end = self.previous();
+                expr = Expr::Try {
+                    expr: Box::new(expr),
+                    span: Span::new(start_offset, end.offset + end.length - start_offset),
                 };
             } else {
                 break;
@@ -529,6 +548,22 @@ impl<'a> Parser<'a> {
             TokenKind::None => {
                 self.advance();
                 Some(Expr::None)
+            }
+            
+            TokenKind::Ok => {
+                self.advance();
+                self.expect(TokenKind::LeftParen, "expected '(' after 'ok'")?;
+                let value = self.expression()?;
+                self.expect(TokenKind::RightParen, "expected ')' after ok value")?;
+                Some(Expr::Ok(Box::new(value)))
+            }
+            
+            TokenKind::Err => {
+                self.advance();
+                self.expect(TokenKind::LeftParen, "expected '(' after 'err'")?;
+                let value = self.expression()?;
+                self.expect(TokenKind::RightParen, "expected ')' after err value")?;
+                Some(Expr::Err(Box::new(value)))
             }
 
             TokenKind::Identifier => {

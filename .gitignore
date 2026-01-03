@@ -19,3 +19,5 @@ Thumbs.db
 
 # Generated C files (optional - uncomment to ignore)
 examples/*.c
+examples/PersonalCSRProjects
+examples/*.exe

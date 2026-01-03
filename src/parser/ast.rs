@@ -143,6 +143,10 @@ impl TypeSpec {
     pub fn is_option(&self) -> bool {
         matches!(self.base, BaseType::Option(_))
     }
+    
+    pub fn is_result(&self) -> bool {
+        matches!(self.base, BaseType::Result(_, _))
+    }
 }
 
 /// Base types
@@ -186,6 +190,7 @@ pub enum BaseType {
     
     // CScript-specific
     Option(Box<TypeSpec>),
+    Result(Box<TypeSpec>, Box<TypeSpec>),  // Result<T, E>
 }
 
 impl BaseType {
@@ -221,6 +226,14 @@ impl BaseType {
             BaseType::Option(inner) => {
                 // Option types become a struct with is_some flag
                 format!("Option_{}", inner.base.to_c_type().replace(' ', "_"))
+            }
+            BaseType::Result(ok_type, err_type) => {
+                // Result types become a struct with is_ok flag and union
+                format!(
+                    "Result_{}_{}",
+                    ok_type.base.to_c_type().replace(' ', "_").replace('*', "ptr"),
+                    err_type.base.to_c_type().replace(' ', "_").replace('*', "ptr")
+                )
             }
         }
     }
@@ -325,6 +338,8 @@ pub struct MatchArm {
 pub enum MatchPattern {
     Some(String),  // some(name) => binds value to name
     None,          // none =>
+    Ok(String),    // ok(name) => binds ok value to name (for Result)
+    Err(String),   // err(name) => binds error value to name (for Result)
 }
 
 /// Expressions
@@ -437,6 +452,27 @@ pub enum Expr {
     
     /// Check if Option is empty (.is_none())
     IsNone(Box<Expr>),
+    
+    /// Ok constructor for Result - ok(value)
+    Ok(Box<Expr>),
+    
+    /// Err constructor for Result - err(value)
+    Err(Box<Expr>),
+    
+    /// Try operator (?) - propagates errors
+    Try {
+        expr: Box<Expr>,
+        span: Span,
+    },
+    
+    /// Check if Result is ok (.is_ok())
+    IsOk(Box<Expr>),
+    
+    /// Check if Result is err (.is_err())
+    IsErr(Box<Expr>),
+    
+    /// Unwrap error value (.unwrap_err())
+    UnwrapErr(Box<Expr>),
 }
 
 /// Sizeof argument

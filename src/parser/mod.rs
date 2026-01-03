@@ -229,6 +229,22 @@ impl<'a> Parser<'a> {
                 is_volatile,
             });
         }
+        
+        // Result<T, E> type
+        if self.match_token(TokenKind::Result) {
+            self.expect(TokenKind::Less, "expected '<' after Result")?;
+            let ok_type = self.parse_type()?;
+            self.expect(TokenKind::Comma, "expected ',' between Result types")?;
+            let err_type = self.parse_type()?;
+            self.expect(TokenKind::Greater, "expected '>' after Result types")?;
+            
+            return Some(TypeSpec {
+                base: BaseType::Result(Box::new(ok_type), Box::new(err_type)),
+                pointer_depth: 0,
+                is_const,
+                is_volatile,
+            });
+        }
 
         // Base type
         let base = self.parse_base_type()?;

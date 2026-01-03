@@ -1,0 +1,80 @@
+// result_test.csr - Test Result<T, E> type and ? operator
+#include <stdio.h>
+#include <stdlib.h>
+
+// Parse a positive integer, return error if not positive
+Result<int, char*> parse_positive(char* s) {
+    int val = atoi(s);
+    if (val <= 0) {
+        return err("must be positive");
+    }
+    return ok(val);
+}
+
+// Add two positive numbers using ? operator for error propagation
+Result<int, char*> add_positives(char* a, char* b) {
+    int x = parse_positive(a)?;
+    int y = parse_positive(b)?;
+    return ok(x + y);
+}
+
+// Divide with error handling
+Result<int, char*> safe_divide(int a, int b) {
+    if (b == 0) {
+        return err("division by zero");
+    }
+    return ok(a / b);
+}
+
+int main() {
+    printf("=== Result<T, E> Test ===\n\n");
+    
+    // Test 1: Basic ok/err
+    printf("--- Test 1: Basic ok/err ---\n");
+    Result<int, char*> r1 = parse_positive("42");
+    if (r1.is_ok()) {
+        printf("Parsed: %d\n", r1.ok_value);
+    }
+    
+    Result<int, char*> r2 = parse_positive("-5");
+    if (r2.is_err()) {
+        printf("Error: %s\n", r2.unwrap_err());
+    }
+    
+    // Test 2: ? operator
+    printf("\n--- Test 2: ? operator ---\n");
+    Result<int, char*> sum1 = add_positives("10", "20");
+    match (sum1) {
+        ok(val) => {
+            printf("Sum: %d\n", val);
+        }
+        err(e) => {
+            printf("Error: %s\n", e);
+        }
+    }
+    
+    Result<int, char*> sum2 = add_positives("10", "-5");
+    match (sum2) {
+        ok(val) => {
+            printf("Sum: %d\n", val);
+        }
+        err(e) => {
+            printf("Error: %s\n", e);
+        }
+    }
+    
+    // Test 3: Division
+    printf("\n--- Test 3: Division ---\n");
+    Result<int, char*> div1 = safe_divide(100, 5);
+    if (div1.is_ok()) {
+        printf("100 / 5 = %d\n", div1.unwrap());
+    }
+    
+    Result<int, char*> div2 = safe_divide(100, 0);
+    if (div2.is_err()) {
+        printf("100 / 0 = Error: %s\n", div2.unwrap_err());
+    }
+    
+    printf("\n=== Test Complete ===\n");
+    return 0;
+}

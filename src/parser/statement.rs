@@ -355,8 +355,18 @@ impl<'a> Parser<'a> {
                 MatchPattern::Some(name)
             } else if self.match_token(TokenKind::None) {
                 MatchPattern::None
+            } else if self.match_token(TokenKind::Ok) {
+                self.expect(TokenKind::LeftParen, "expected '(' after 'ok'")?;
+                let name = self.expect_identifier("expected variable name in ok pattern")?;
+                self.expect(TokenKind::RightParen, "expected ')' after ok pattern")?;
+                MatchPattern::Ok(name)
+            } else if self.match_token(TokenKind::Err) {
+                self.expect(TokenKind::LeftParen, "expected '(' after 'err'")?;
+                let name = self.expect_identifier("expected variable name in err pattern")?;
+                self.expect(TokenKind::RightParen, "expected ')' after err pattern")?;
+                MatchPattern::Err(name)
             } else {
-                self.error_at_current(codes::EXPECTED_TOKEN, "expected 'some' or 'none' in match arm");
+                self.error_at_current(codes::EXPECTED_TOKEN, "expected 'some', 'none', 'ok', or 'err' in match arm");
                 return None;
             };
 

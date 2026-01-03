@@ -9,10 +9,14 @@ pub struct CEmitter {
     indent: usize,
     /// Track Option types used (to generate their struct definitions)
     option_types: HashSet<String>,
+    /// Track Result types used (to generate their struct definitions)
+    result_types: HashSet<String>,
     /// Whether to emit bounds checks
     bounds_checks: bool,
-    /// Current function's return type (for Option implicit wrapping)
+    /// Current function's return type (for Option/Result implicit wrapping)
     current_return_type: Option<TypeSpec>,
+    /// Counter for generating unique temporary variable names
+    temp_counter: usize,
 }
 
 impl CEmitter {
@@ -21,8 +25,10 @@ impl CEmitter {
             output: String::new(),
             indent: 0,
             option_types: HashSet::new(),
+            result_types: HashSet::new(),
             bounds_checks: false,
             current_return_type: None,
+            temp_counter: 0,
         }
     }
 
@@ -32,7 +38,7 @@ impl CEmitter {
 
     /// Emit C code from a program
     pub fn emit(&mut self, program: &Program) -> String {
-        // First pass: collect all Option types used
+        // First pass: collect all Option and Result types used
         self.collect_option_types(program);
 
         // Emit header
@@ -40,6 +46,9 @@ impl CEmitter {
 
         // Emit Option type definitions
         self.emit_option_types();
+        
+        // Emit Result type definitions
+        self.emit_result_types();
 
         // Emit declarations
         for decl in &program.declarations {
@@ -120,11 +129,32 @@ impl CEmitter {
             // Recursively scan inner type
             self.scan_type_for_option(inner);
         }
+        if let BaseType::Result(ok_type, err_type) = &type_spec.base {
+            let type_name = self.result_type_name(ok_type, err_type);
+            self.result_types.insert(type_name);
+            // Recursively scan inner types
+            self.scan_type_for_option(ok_type);
+            self.scan_type_for_option(err_type);
+        }
     }
 
     fn option_type_name(&self, inner: &TypeSpec) -> String {
         let mut name = format!("Option_{}", inner.base.to_c_type().replace(' ', "_"));
         for _ in 0..inner.pointer_depth {
+            name.push_str("_ptr");
+        }
+        name
+    }
+    
+    fn result_type_name(&self, ok_type: &TypeSpec, err_type: &TypeSpec) -> String {
+        let ok_name = self.type_to_c_name(ok_type);
+        let err_name = self.type_to_c_name(err_type);
+        format!("Result_{}_{}", ok_name, err_name)
+    }
+    
+    fn type_to_c_name(&self, type_spec: &TypeSpec) -> String {
+        let mut name = type_spec.base.to_c_type().replace(' ', "_").replace('*', "");
+        for _ in 0..type_spec.pointer_depth {
             name.push_str("_ptr");
         }
         name
@@ -137,6 +167,15 @@ impl CEmitter {
         } else {
             // Fallback - shouldn't happen
             "Option_unknown".to_string()
+        }
+    }
+    
+    /// Get Result type name from a TypeSpec that is known to be Result<T, E>
+    fn result_type_name_from_spec(&self, spec: &TypeSpec) -> String {
+        if let BaseType::Result(ok_type, err_type) = &spec.base {
+            self.result_type_name(ok_type, err_type)
+        } else {
+            "Result_unknown".to_string()
         }
     }
 
@@ -172,22 +211,56 @@ impl CEmitter {
         self.writeln("/* Option type definitions */");
         
         for type_name in &self.option_types.clone() {
-            // Parse the inner type from the name (simplified)
             self.writeln(&format!("typedef struct {{"));
             self.indent += 1;
             self.write_indent();
             self.writeln("bool is_some;");
             self.write_indent();
-            // Extract inner type - this is simplified, we'd need to store more info
-            self.writeln("void* value;");
+            self.writeln("void* ok_value;");  // Use ok_value for consistency with Result
             self.indent -= 1;
             self.writeln(&format!("}} {};", type_name));
             self.newline();
 
             // Helper macros for this Option type
-            self.writeln(&format!("#define {}_SOME(v) (({}){{ .is_some = true, .value = (void*)(v) }})", 
+            self.writeln(&format!("#define {}_SOME(v) (({}){{ .is_some = true, .ok_value = (void*)(v) }})", 
                 type_name, type_name));
-            self.writeln(&format!("#define {}_NONE (({}){{ .is_some = false, .value = NULL }})", 
+            self.writeln(&format!("#define {}_NONE (({}){{ .is_some = false, .ok_value = NULL }})", 
+                type_name, type_name));
+            self.newline();
+        }
+    }
+    
+    /// Emit Result type struct definitions
+    fn emit_result_types(&mut self) {
+        if self.result_types.is_empty() {
+            return;
+        }
+
+        self.writeln("/* Result type definitions */");
+        
+        for type_name in &self.result_types.clone() {
+            self.writeln(&format!("typedef struct {{"));
+            self.indent += 1;
+            self.write_indent();
+            self.writeln("bool is_ok;");
+            self.write_indent();
+            self.writeln("union {");
+            self.indent += 1;
+            self.write_indent();
+            self.writeln("void* ok_value;");
+            self.write_indent();
+            self.writeln("void* err_value;");
+            self.indent -= 1;
+            self.write_indent();
+            self.writeln("};");
+            self.indent -= 1;
+            self.writeln(&format!("}} {};", type_name));
+            self.newline();
+
+            // Helper macros for this Result type
+            self.writeln(&format!("#define {}_OK(v) (({}){{ .is_ok = true, .ok_value = (void*)(intptr_t)(v) }})", 
+                type_name, type_name));
+            self.writeln(&format!("#define {}_ERR(e) (({}){{ .is_ok = false, .err_value = (void*)(intptr_t)(e) }})", 
                 type_name, type_name));
             self.newline();
         }
@@ -415,6 +488,10 @@ impl CEmitter {
                 let name = self.option_type_name(inner);
                 self.write(&name);
             }
+            BaseType::Result(ok_type, err_type) => {
+                let name = self.result_type_name(ok_type, err_type);
+                self.write(&name);
+            }
             _ => {
                 self.write(&type_spec.base.to_c_type());
             }
@@ -438,6 +515,51 @@ impl CEmitter {
         self.write_indent();
         self.writeln("}");
     }
+    
+    /// Emit a variable declaration with a Try (?) expression
+    /// Expands: `int x = foo()?;` into:
+    /// ```c
+    /// Result_T_E _tmp = foo();
+    /// if (!_tmp.is_ok) { return Result_T_E_ERR(_tmp.err_value); }
+    /// int x = _tmp.ok_value;
+    /// ```
+    fn emit_try_var_decl(&mut self, var: &VariableDecl, try_expr: &Expr) {
+        let temp_name = format!("_try_{}", self.temp_counter);
+        self.temp_counter += 1;
+        
+        // Get the Result type from the current function's return type
+        let result_type_name = if let Some(ref ret_type) = self.current_return_type {
+            self.result_type_name_from_spec(ret_type)
+        } else {
+            "Result_unknown".to_string()
+        };
+        
+        // Emit: Result_T_E _tmp = expr;
+        self.write_indent();
+        self.write(&result_type_name);
+        self.write(" ");
+        self.write(&temp_name);
+        self.write(" = ");
+        self.emit_expr(try_expr);
+        self.writeln(";");
+        
+        // Emit: if (!_tmp.is_ok) { return Result_T_E_ERR(_tmp.err_value); }
+        self.write_indent();
+        self.write(&format!("if (!{}.is_ok) {{ return {}_ERR({}.err_value); }}", 
+            temp_name, result_type_name, temp_name));
+        self.newline();
+        
+        // Emit: T var_name = _tmp.ok_value;
+        self.write_indent();
+        if !var.is_mutable {
+            self.write("const ");
+        }
+        self.emit_type(&var.type_spec);
+        self.write(" ");
+        self.write(&var.name);
+        self.write(&format!(" = {}.ok_value;", temp_name));
+        self.newline();
+    }
 
     /// Emit a statement
     fn emit_stmt(&mut self, stmt: &Stmt) {
@@ -449,6 +571,15 @@ impl CEmitter {
             }
 
             Stmt::VarDecl(var) => {
+                // Check if initializer contains a Try (?) expression
+                if let Some(ref init) = var.initializer {
+                    if let Expr::Try { expr, .. } = init {
+                        // Expand the ? operator
+                        self.emit_try_var_decl(var, expr);
+                        return;
+                    }
+                }
+                
                 self.write_indent();
 
                 if var.is_static {
@@ -603,14 +734,13 @@ impl CEmitter {
             }
 
             Stmt::Match { expr, arms } => {
-                // Emit match as if-else chain using Option struct fields
+                // Emit match as if-else chain using Option/Result struct fields
                 self.write_indent();
                 self.writeln("{");
                 self.indent += 1;
 
-                // Store the Option value in a temp variable
+                // Store the Option/Result value in a temp variable
                 self.write_indent();
-                // TODO: Emit proper type - for now use auto with a workaround
                 self.write("const typeof(");
                 self.emit_expr(expr);
                 self.write(") _match_val = ");
@@ -627,12 +757,10 @@ impl CEmitter {
                         MatchPattern::Some(name) => {
                             self.writeln("if (_match_val.is_some) {");
                             self.indent += 1;
-                            // Extract the value - cast from void* to proper type
-                            // The type should match the inner type of the Option
                             self.write_indent();
-                            self.write("const typeof(_match_val.value) ");
+                            self.write("const typeof(_match_val.ok_value) ");
                             self.write(name);
-                            self.writeln(" = _match_val.value;");
+                            self.writeln(" = _match_val.ok_value;");
                             
                             for stmt in &arm.body.statements {
                                 self.emit_stmt(stmt);
@@ -645,6 +773,38 @@ impl CEmitter {
                         MatchPattern::None => {
                             self.writeln("{");
                             self.indent += 1;
+                            
+                            for stmt in &arm.body.statements {
+                                self.emit_stmt(stmt);
+                            }
+                            
+                            self.indent -= 1;
+                            self.write_indent();
+                            self.writeln("}");
+                        }
+                        MatchPattern::Ok(name) => {
+                            self.writeln("if (_match_val.is_ok) {");
+                            self.indent += 1;
+                            self.write_indent();
+                            self.write("const typeof(_match_val.ok_value) ");
+                            self.write(name);
+                            self.writeln(" = _match_val.ok_value;");
+                            
+                            for stmt in &arm.body.statements {
+                                self.emit_stmt(stmt);
+                            }
+                            
+                            self.indent -= 1;
+                            self.write_indent();
+                            self.writeln("}");
+                        }
+                        MatchPattern::Err(name) => {
+                            self.writeln("if (!_match_val.is_ok) {");
+                            self.indent += 1;
+                            self.write_indent();
+                            self.write("const typeof(_match_val.err_value) ");
+                            self.write(name);
+                            self.writeln(" = _match_val.err_value;");
                             
                             for stmt in &arm.body.statements {
                                 self.emit_stmt(stmt);
@@ -669,7 +829,7 @@ impl CEmitter {
                 if let Some(ref e) = expr {
                     self.write(" ");
                     
-                    // Check if we need to wrap the value for Option return type
+                    // Check if we need to wrap the value for Option/Result return type
                     if let Some(ref ret_type) = self.current_return_type.clone() {
                         if ret_type.is_option() {
                             // Check if the expression is 'none'
@@ -678,12 +838,31 @@ impl CEmitter {
                                 let type_name = self.option_type_name_from_spec(ret_type);
                                 self.write(&format!("{}_NONE", type_name));
                             } else {
-                                // Check if expression is already an Option (e.g., calling another Option function)
-                                // For now, wrap non-None values with SOME macro
+                                // Wrap non-None values with SOME macro
                                 let type_name = self.option_type_name_from_spec(ret_type);
                                 self.write(&format!("{}_SOME(", type_name));
                                 self.emit_expr(e);
                                 self.write(")");
+                            }
+                        } else if ret_type.is_result() {
+                            // Check if the expression is ok() or err()
+                            match e {
+                                Expr::Ok(val) => {
+                                    let type_name = self.result_type_name_from_spec(ret_type);
+                                    self.write(&format!("{}_OK(", type_name));
+                                    self.emit_expr(val);
+                                    self.write(")");
+                                }
+                                Expr::Err(val) => {
+                                    let type_name = self.result_type_name_from_spec(ret_type);
+                                    self.write(&format!("{}_ERR(", type_name));
+                                    self.emit_expr(val);
+                                    self.write(")");
+                                }
+                                _ => {
+                                    // Assume it's already a Result or needs wrapping as Ok
+                                    self.emit_expr(e);
+                                }
                             }
                         } else {
                             self.emit_expr(e);
@@ -909,11 +1088,10 @@ impl CEmitter {
             }
 
             Expr::Unwrap(inner) => {
-                // Access the value field of Option struct
-                // TODO: Add runtime check if bounds_checks enabled
+                // Access ok_value field (works for both Option and Result now)
                 self.write("((");
                 self.emit_expr(inner);
-                self.write(").value)");
+                self.write(").ok_value)");
             }
 
             Expr::UnwrapOr { expr, default } => {
@@ -921,7 +1099,7 @@ impl CEmitter {
                 self.emit_expr(expr);
                 self.write(").is_some ? (");
                 self.emit_expr(expr);
-                self.write(").value : (");
+                self.write(").ok_value : (");
                 self.emit_expr(default);
                 self.write("))");
             }
@@ -936,6 +1114,73 @@ impl CEmitter {
                 self.write("(!(");
                 self.emit_expr(inner);
                 self.write(").is_some)");
+            }
+            
+            Expr::Ok(value) => {
+                // Get the current return type to determine the Result type name
+                if let Some(ref ret_type) = self.current_return_type.clone() {
+                    if let BaseType::Result(_, _) = &ret_type.base {
+                        let type_name = self.result_type_name_from_spec(&ret_type);
+                        self.write(&format!("{}_OK(", type_name));
+                        self.emit_expr(value);
+                        self.write(")");
+                    } else {
+                        // Fallback
+                        self.write("/* ok */ (");
+                        self.emit_expr(value);
+                        self.write(")");
+                    }
+                } else {
+                    self.write("/* ok */ (");
+                    self.emit_expr(value);
+                    self.write(")");
+                }
+            }
+            
+            Expr::Err(value) => {
+                if let Some(ref ret_type) = self.current_return_type.clone() {
+                    if let BaseType::Result(_, _) = &ret_type.base {
+                        let type_name = self.result_type_name_from_spec(&ret_type);
+                        self.write(&format!("{}_ERR(", type_name));
+                        self.emit_expr(value);
+                        self.write(")");
+                    } else {
+                        self.write("/* err */ (");
+                        self.emit_expr(value);
+                        self.write(")");
+                    }
+                } else {
+                    self.write("/* err */ (");
+                    self.emit_expr(value);
+                    self.write(")");
+                }
+            }
+            
+            Expr::Try { expr, .. } => {
+                // The ? operator is handled specially in emit_stmt for statements
+                // For expressions, we emit a placeholder that will be expanded
+                // This case handles when ? is used in a non-statement context
+                self.write("/* try */ (");
+                self.emit_expr(expr);
+                self.write(").ok_value");
+            }
+            
+            Expr::IsOk(inner) => {
+                self.write("((");
+                self.emit_expr(inner);
+                self.write(").is_ok)");
+            }
+            
+            Expr::IsErr(inner) => {
+                self.write("(!(");
+                self.emit_expr(inner);
+                self.write(").is_ok)");
+            }
+            
+            Expr::UnwrapErr(inner) => {
+                self.write("((");
+                self.emit_expr(inner);
+                self.write(").err_value)");
             }
         }
     }
