@@ -1,0 +1,21 @@
+// Test file for Issue 01: Struct Member Access Type Resolution
+
+struct Point {
+    int x;
+    int y;
+};
+
+int main() {
+    struct Point p = { .x = 10, .y = 20 };
+    
+    // This should now correctly type-check p.x as 'int' instead of 'struct Point'
+    int value = p.x;
+    int sum = p.x + p.y;
+    
+    // Test pointer member access
+    mut struct Point* pp = &p;
+    int px = pp->x;
+    int py = pp->y;
+    
+    return value + sum + px + py;
+}

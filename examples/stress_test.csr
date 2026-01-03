@@ -1,0 +1,228 @@
+// stress_test.csr - Comprehensive type system stress test
+#include <stdio.h>
+#include <stdlib.h>
+
+// ============================================
+// PART 1: Function Argument Validation
+// ============================================
+
+void no_args() {
+    printf("no_args called\n");
+}
+
+void one_arg(int x) {
+    printf("one_arg: %d\n", x);
+}
+
+void two_args(int a, int b) {
+    printf("two_args: %d, %d\n", a, b);
+}
+
+void three_args(int a, int b, int c) {
+    printf("three_args: %d, %d, %d\n", a, b, c);
+}
+
+void mixed_types(int a, char* msg, double d) {
+    printf("mixed: %d, %s, %f\n", a, msg, d);
+}
+
+// ============================================
+// PART 2: Option Types
+// ============================================
+
+Option<int> safe_divide(int a, int b) {
+    if (b == 0) {
+        return none;
+    }
+    return a / b;
+}
+
+Option<int*> find_positive(int* arr, int len) {
+    for (int i = 0; i < len; i++) {
+        if (arr[i] > 0) {
+            return &arr[i];
+        }
+    }
+    return none;
+}
+
+// ============================================
+// PART 3: Struct Member Access
+// ============================================
+
+struct Point {
+    int x;
+    int y;
+};
+
+struct Rectangle {
+    struct Point top_left;
+    struct Point bottom_right;
+};
+
+struct Node {
+    int value;
+    struct Node* next;
+};
+
+int point_sum(struct Point p) {
+    return p.x + p.y;
+}
+
+int rect_area(struct Rectangle* r) {
+    int width = r->bottom_right.x - r->top_left.x;
+    int height = r->bottom_right.y - r->top_left.y;
+    return width * height;
+}
+
+// ============================================
+// PART 4: Type Conversions
+// ============================================
+
+void test_narrowing() {
+    // These should produce narrowing warnings
+    int64 big64 = 1000000;
+    int32 med32 = big64;        // W005: int64 -> int32
+    int16 small16 = med32;      // W005: int32 -> int16
+    int8 tiny8 = small16;       // W005: int16 -> int8
+    
+    // Unsigned narrowing
+    uint64 ubig = 500;
+    uint32 umed = ubig;         // W005: uint64 -> uint32
+    uint16 usmall = umed;       // W005: uint32 -> uint16
+    uint8 utiny = usmall;       // W005: uint16 -> uint8
+    
+    // Same size - no warning
+    int32 a = 10;
+    int32 b = a;                // OK
+    
+    // Widening - no warning
+    int8 s8 = 5;
+    int16 s16 = s8;             // OK (widening)
+    int32 s32 = s16;            // OK (widening)
+    int64 s64 = s32;            // OK (widening)
+    
+    printf("Narrowing test: %d %d %d %d\n", tiny8, utiny, b, s64);
+}
+
+void test_signed_unsigned() {
+    int si = -5;
+    uint32 ui = 10;
+    
+    // These should produce signed/unsigned comparison warnings
+    if (si < ui) {              // W006
+        printf("si < ui\n");
+    }
+    if (si == ui) {             // W006
+        printf("si == ui\n");
+    }
+    if (si != ui) {             // W006
+        printf("si != ui\n");
+    }
+    if (si > ui) {              // W006
+        printf("si > ui\n");
+    }
+    if (si <= ui) {             // W006
+        printf("si <= ui\n");
+    }
+    if (si >= ui) {             // W006
+        printf("si >= ui\n");
+    }
+    
+    // Same signedness - no warning
+    int a = 1;
+    int b = 2;
+    if (a < b) {                // OK
+        printf("a < b\n");
+    }
+    
+    uint32 x = 1;
+    uint32 y = 2;
+    if (x < y) {                // OK
+        printf("x < y\n");
+    }
+}
+
+// ============================================
+// PART 5: Main - Exercise Everything
+// ============================================
+
+int main() {
+    printf("=== Stress Test ===\n\n");
+    
+    // --- Function calls (correct) ---
+    printf("--- Correct function calls ---\n");
+    no_args();
+    one_arg(42);
+    two_args(1, 2);
+    three_args(1, 2, 3);
+    mixed_types(10, "hello", 3.14);
+    
+    // --- Function calls (errors - comment out to compile) ---
+    // no_args(1);              // E200: expects 0, got 1
+    // one_arg();               // E200: expects 1, got 0
+    // one_arg(1, 2);           // E200: expects 1, got 2
+    // two_args(1);             // E200: expects 2, got 1
+    // mixed_types(1, 2, 3);    // E200: type mismatch (int vs char*)
+    
+    // --- Option types ---
+    printf("\n--- Option types ---\n");
+    Option<int> result = safe_divide(10, 2);
+    if (result.is_some()) {
+        printf("10/2 = %d\n", result.unwrap());
+    }
+    
+    Option<int> div_zero = safe_divide(10, 0);
+    if (div_zero.is_none()) {
+        printf("Division by zero avoided\n");
+    }
+    
+    int val = result.unwrap_or(-1);
+    printf("Value: %d\n", val);
+    
+    match (result) {
+        some(v) => {
+            printf("Match got: %d\n", v);
+        }
+        none => {
+            printf("Match got none\n");
+        }
+    }
+    
+    // --- Struct access ---
+    printf("\n--- Struct access ---\n");
+    struct Point p = { .x = 10, .y = 20 };
+    printf("Point sum: %d\n", point_sum(p));
+    printf("Direct access: x=%d, y=%d\n", p.x, p.y);
+    
+    struct Rectangle rect = {
+        .top_left = { .x = 0, .y = 0 },
+        .bottom_right = { .x = 100, .y = 50 }
+    };
+    struct Rectangle* rp = &rect;
+    printf("Rect area: %d\n", rect_area(rp));
+    printf("Via pointer: tl=(%d,%d) br=(%d,%d)\n", 
+           rp->top_left.x, rp->top_left.y,
+           rp->bottom_right.x, rp->bottom_right.y);
+    
+    // --- Linked list ---
+    struct Node n3 = { .value = 30, .next = 0 };
+    struct Node n2 = { .value = 20, .next = &n3 };
+    struct Node n1 = { .value = 10, .next = &n2 };
+    
+    mut struct Node* current = &n1;
+    printf("List: ");
+    while (current != 0) {
+        printf("%d ", current->value);
+        current = current->next;
+    }
+    printf("\n");
+    
+    // --- Type conversions ---
+    printf("\n--- Type conversions ---\n");
+    test_narrowing();
+    test_signed_unsigned();
+    
+    printf("\n=== Stress Test Complete ===\n");
+    return 0;
+}

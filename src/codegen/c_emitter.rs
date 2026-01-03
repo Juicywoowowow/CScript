@@ -11,6 +11,8 @@ pub struct CEmitter {
     option_types: HashSet<String>,
     /// Whether to emit bounds checks
     bounds_checks: bool,
+    /// Current function's return type (for Option implicit wrapping)
+    current_return_type: Option<TypeSpec>,
 }
 
 impl CEmitter {
@@ -20,6 +22,7 @@ impl CEmitter {
             indent: 0,
             option_types: HashSet::new(),
             bounds_checks: false,
+            current_return_type: None,
         }
     }
 
@@ -125,6 +128,16 @@ impl CEmitter {
             name.push_str("_ptr");
         }
         name
+    }
+    
+    /// Get Option type name from a TypeSpec that is known to be Option<T>
+    fn option_type_name_from_spec(&self, spec: &TypeSpec) -> String {
+        if let BaseType::Option(inner) = &spec.base {
+            self.option_type_name(inner)
+        } else {
+            // Fallback - shouldn't happen
+            "Option_unknown".to_string()
+        }
     }
 
     /// Emit the C file header
@@ -233,8 +246,11 @@ impl CEmitter {
 
         // Body or declaration
         if let Some(ref body) = func.body {
+            // Track return type for Option implicit wrapping
+            self.current_return_type = Some(func.return_type.clone());
             self.write(" ");
             self.emit_block(body);
+            self.current_return_type = None;
         } else {
             self.writeln(";");
         }
@@ -587,19 +603,19 @@ impl CEmitter {
             }
 
             Stmt::Match { expr, arms } => {
-                // Emit match as if-else chain
-                // First, evaluate the expression once
+                // Emit match as if-else chain using Option struct fields
                 self.write_indent();
                 self.writeln("{");
                 self.indent += 1;
 
-                // Store the Option value in a temp
+                // Store the Option value in a temp variable
                 self.write_indent();
-                self.write("const ");
-                // We'd need the type here - for now assume it's known
-                self.write("void* _match_val = (void*)(");
+                // TODO: Emit proper type - for now use auto with a workaround
+                self.write("const typeof(");
                 self.emit_expr(expr);
-                self.writeln(");");
+                self.write(") _match_val = ");
+                self.emit_expr(expr);
+                self.writeln(";");
 
                 for (i, arm) in arms.iter().enumerate() {
                     self.write_indent();
@@ -609,13 +625,14 @@ impl CEmitter {
 
                     match &arm.pattern {
                         MatchPattern::Some(name) => {
-                            self.write("if (_match_val != NULL) ");
-                            self.writeln("{");
+                            self.writeln("if (_match_val.is_some) {");
                             self.indent += 1;
+                            // Extract the value - cast from void* to proper type
+                            // The type should match the inner type of the Option
                             self.write_indent();
-                            self.write("void* ");
+                            self.write("const typeof(_match_val.value) ");
                             self.write(name);
-                            self.writeln(" = _match_val;");
+                            self.writeln(" = _match_val.value;");
                             
                             for stmt in &arm.body.statements {
                                 self.emit_stmt(stmt);
@@ -648,9 +665,32 @@ impl CEmitter {
             Stmt::Return(expr) => {
                 self.write_indent();
                 self.write("return");
+                
                 if let Some(ref e) = expr {
                     self.write(" ");
-                    self.emit_expr(e);
+                    
+                    // Check if we need to wrap the value for Option return type
+                    if let Some(ref ret_type) = self.current_return_type.clone() {
+                        if ret_type.is_option() {
+                            // Check if the expression is 'none'
+                            if matches!(e, Expr::None) {
+                                // Return NONE macro
+                                let type_name = self.option_type_name_from_spec(ret_type);
+                                self.write(&format!("{}_NONE", type_name));
+                            } else {
+                                // Check if expression is already an Option (e.g., calling another Option function)
+                                // For now, wrap non-None values with SOME macro
+                                let type_name = self.option_type_name_from_spec(ret_type);
+                                self.write(&format!("{}_SOME(", type_name));
+                                self.emit_expr(e);
+                                self.write(")");
+                            }
+                        } else {
+                            self.emit_expr(e);
+                        }
+                    } else {
+                        self.emit_expr(e);
+                    }
                 }
                 self.writeln(";");
             }
@@ -681,6 +721,11 @@ impl CEmitter {
             Stmt::Empty => {
                 self.write_indent();
                 self.writeln(";");
+            }
+            
+            Stmt::StructDecl(s) => {
+                self.write_indent();
+                self.emit_struct(s);
             }
         }
     }
@@ -735,7 +780,7 @@ impl CEmitter {
                 self.write(name);
             }
 
-            Expr::Binary { left, op, right } => {
+            Expr::Binary { left, op, right, .. } => {
                 self.write("(");
                 self.emit_expr(left);
                 self.write(" ");
@@ -762,7 +807,7 @@ impl CEmitter {
                 }
             }
 
-            Expr::Assign { target, op, value } => {
+            Expr::Assign { target, op, value, .. } => {
                 self.emit_expr(target);
                 self.write(" ");
                 self.write(op.to_c_str());
@@ -770,7 +815,7 @@ impl CEmitter {
                 self.emit_expr(value);
             }
 
-            Expr::Call { callee, args } => {
+            Expr::Call { callee, args, .. } => {
                 self.emit_expr(callee);
                 self.write("(");
                 for (i, arg) in args.iter().enumerate() {
@@ -864,20 +909,33 @@ impl CEmitter {
             }
 
             Expr::Unwrap(inner) => {
-                // Unwrap panics if none - emit an assertion
-                self.write("(*(");
+                // Access the value field of Option struct
+                // TODO: Add runtime check if bounds_checks enabled
+                self.write("((");
                 self.emit_expr(inner);
-                self.write("))");
+                self.write(").value)");
             }
 
             Expr::UnwrapOr { expr, default } => {
                 self.write("((");
                 self.emit_expr(expr);
-                self.write(") != NULL ? *(");
+                self.write(").is_some ? (");
                 self.emit_expr(expr);
-                self.write(") : (");
+                self.write(").value : (");
                 self.emit_expr(default);
                 self.write("))");
+            }
+            
+            Expr::IsSome(inner) => {
+                self.write("((");
+                self.emit_expr(inner);
+                self.write(").is_some)");
+            }
+            
+            Expr::IsNone(inner) => {
+                self.write("(!(");
+                self.emit_expr(inner);
+                self.write(").is_some)");
             }
         }
     }

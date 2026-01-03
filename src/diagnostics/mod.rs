@@ -236,4 +236,6 @@ pub mod codes {
     pub const UNUSED_FUNCTION: &str = "W002";
     pub const SHADOWED_VARIABLE: &str = "W003";
     pub const UNREACHABLE_CODE: &str = "W004";
+    pub const NARROWING_CONVERSION: &str = "W005";
+    pub const SIGNED_UNSIGNED_COMPARE: &str = "W006";
 }

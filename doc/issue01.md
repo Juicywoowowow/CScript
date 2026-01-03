@@ -1,7 +1,7 @@
 # Issue 01: Struct Member Access Type Resolution
 
 ## Status
-**Open** - Low Priority
+**Resolved** - Fixed on 2026-01-03
 
 ## Summary
 The type checker does not correctly resolve the type of struct member access expressions (`.` operator). Currently, it returns the struct type instead of the field's type.

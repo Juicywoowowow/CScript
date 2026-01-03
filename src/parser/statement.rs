@@ -1,6 +1,6 @@
 //! Statement parser for CScript.
 
-use super::{Block, Expr, MatchArm, MatchPattern, Parser, Stmt, SwitchCase, VariableDecl};
+use super::{Block, Expr, MatchArm, MatchPattern, Parser, Span, Stmt, SwitchCase, VariableDecl};
 use super::expression::ExpressionParser;
 use crate::diagnostics::codes;
 use crate::lexer::TokenKind;
@@ -74,13 +74,91 @@ impl<'a> Parser<'a> {
         kind.can_start_declaration()
     }
 
-    /// Parse local variable declaration
+    /// Parse local variable declaration (or struct declaration)
     fn local_var_decl(&mut self) -> Option<Stmt> {
         let is_mutable = self.match_token(TokenKind::Mut);
         let is_static = self.match_token(TokenKind::Static);
         
+        // Check if this is a local struct definition
+        if self.check(TokenKind::Struct) {
+            // Peek ahead to see if it's a struct definition or a variable of struct type
+            // struct Name { ... } vs struct Name varname;
+            self.advance(); // consume 'struct'
+            
+            let struct_name = if self.check(TokenKind::Identifier) {
+                Some(self.advance().lexeme.clone())
+            } else {
+                None
+            };
+            
+            // If followed by '{', it's a struct definition
+            if self.check(TokenKind::LeftBrace) {
+                self.advance(); // consume '{'
+                
+                let mut fields = Vec::new();
+                while !self.check(TokenKind::RightBrace) && !self.is_at_end() {
+                    let field_mutable = self.match_token(TokenKind::Mut);
+                    let field_type = self.parse_type()?;
+                    let field_name = self.expect_identifier("expected field name")?;
+                    let array_dims = self.parse_array_dimensions();
+                    self.expect(TokenKind::Semicolon, "expected ';' after field")?;
+                    
+                    fields.push(super::StructField {
+                        type_spec: field_type,
+                        name: field_name,
+                        array_dims,
+                        is_mutable: field_mutable,
+                    });
+                }
+                
+                self.expect(TokenKind::RightBrace, "expected '}' after struct fields")?;
+                self.expect(TokenKind::Semicolon, "expected ';' after struct definition")?;
+                
+                return Some(Stmt::StructDecl(super::StructDecl {
+                    name: struct_name,
+                    fields,
+                }));
+            }
+            
+            // Otherwise it's a variable of struct type
+            let type_spec = super::TypeSpec {
+                base: super::BaseType::Struct(struct_name.unwrap_or_default()),
+                pointer_depth: 0,
+                is_const: false,
+                is_volatile: false,
+            };
+            
+            // Parse pointer modifiers
+            let mut type_spec = type_spec;
+            while self.match_token(TokenKind::Star) {
+                type_spec.pointer_depth += 1;
+            }
+            
+            let (name, name_span) = self.expect_identifier_with_span("expected variable name")?;
+            let array_dims = self.parse_array_dimensions();
+            
+            let initializer = if self.match_token(TokenKind::Equal) {
+                Some(self.expression()?)
+            } else {
+                None
+            };
+            
+            self.expect(TokenKind::Semicolon, "expected ';' after variable declaration")?;
+            
+            return Some(Stmt::VarDecl(super::VariableDecl {
+                type_spec,
+                name,
+                name_span,
+                array_dims,
+                initializer,
+                is_mutable,
+                is_static,
+                is_extern: false,
+            }));
+        }
+        
         let type_spec = self.parse_type()?;
-        let name = self.expect_identifier("expected variable name")?;
+        let (name, name_span) = self.expect_identifier_with_span("expected variable name")?;
         let array_dims = self.parse_array_dimensions();
 
         let initializer = if self.match_token(TokenKind::Equal) {
@@ -94,6 +172,7 @@ impl<'a> Parser<'a> {
         Some(Stmt::VarDecl(VariableDecl {
             type_spec,
             name,
+            name_span,
             array_dims,
             initializer,
             is_mutable,

@@ -1,0 +1,5 @@
+int main() {
+    mut int a = 50;
+    printf("%d\n", a);
+    return 0;
+}

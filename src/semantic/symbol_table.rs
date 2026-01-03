@@ -9,6 +9,8 @@ pub struct SymbolTable {
     scopes: Vec<Scope>,
     /// Track all defined types (structs, enums, typedefs)
     types: HashMap<String, TypeDef>,
+    /// Track all defined functions (for argument validation)
+    functions: HashMap<String, FunctionDef>,
 }
 
 /// A single scope level
@@ -84,11 +86,27 @@ pub struct UnionDef {
     pub fields: Vec<FieldDef>,
 }
 
+/// Function definition (for argument validation)
+#[derive(Debug, Clone)]
+pub struct FunctionDef {
+    pub name: String,
+    pub return_type: TypeSpec,
+    pub params: Vec<ParamDef>,
+}
+
+/// Parameter definition
+#[derive(Debug, Clone)]
+pub struct ParamDef {
+    pub name: Option<String>,
+    pub type_spec: TypeSpec,
+}
+
 impl SymbolTable {
     pub fn new() -> Self {
         Self {
             scopes: vec![Scope::new(None)], // Global scope
             types: HashMap::new(),
+            functions: HashMap::new(),
         }
     }
 
@@ -122,6 +140,16 @@ impl SymbolTable {
         
         scope.symbols.insert(symbol.name.clone(), symbol);
         Ok(())
+    }
+    
+    /// Define a function (for argument validation)
+    pub fn define_function(&mut self, func: FunctionDef) {
+        self.functions.insert(func.name.clone(), func);
+    }
+    
+    /// Look up a function by name
+    pub fn lookup_function(&self, name: &str) -> Option<&FunctionDef> {
+        self.functions.get(name)
     }
 
     /// Look up a symbol by name (searches all scopes from innermost to outermost)

@@ -1,7 +1,7 @@
 //! Expression parser for CScript.
 //! Implements a Pratt parser for operator precedence.
 
-use super::{AssignOp, BinaryOp, Expr, Parser, SizeofArg, TypeSpec, UnaryOp};
+use super::{AssignOp, BinaryOp, Expr, Parser, SizeofArg, Span, TypeSpec, UnaryOp};
 use crate::diagnostics::{codes, Diagnostic};
 use crate::lexer::TokenKind;
 
@@ -19,14 +19,18 @@ impl<'a> ExpressionParser for Parser<'a> {
 impl<'a> Parser<'a> {
     /// Parse assignment expression (lowest precedence)
     pub(crate) fn parse_assignment(&mut self) -> Option<Expr> {
+        let start_offset = self.peek().offset;
         let expr = self.parse_ternary()?;
 
         if let Some(op) = self.match_assign_op() {
             let value = self.parse_assignment()?;
+            let end_token = self.previous();
+            let span = Span::new(start_offset, end_token.offset + end_token.length - start_offset);
             return Some(Expr::Assign {
                 target: Box::new(expr),
                 op,
                 value: Box::new(value),
+                span,
             });
         }
 
@@ -76,11 +80,14 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_and()?;
 
         while self.match_token(TokenKind::PipePipe) {
+            let op_offset = self.previous().offset;
             let right = self.parse_and()?;
+            let end = self.previous();
             expr = Expr::Binary {
                 left: Box::new(expr),
                 op: BinaryOp::Or,
                 right: Box::new(right),
+                span: Span::new(op_offset, end.offset + end.length - op_offset),
             };
         }
 
@@ -92,11 +99,14 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_bitor()?;
 
         while self.match_token(TokenKind::AmpersandAmpersand) {
+            let op_offset = self.previous().offset;
             let right = self.parse_bitor()?;
+            let end = self.previous();
             expr = Expr::Binary {
                 left: Box::new(expr),
                 op: BinaryOp::And,
                 right: Box::new(right),
+                span: Span::new(op_offset, end.offset + end.length - op_offset),
             };
         }
 
@@ -108,11 +118,14 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_bitxor()?;
 
         while self.match_token(TokenKind::Pipe) {
+            let op_offset = self.previous().offset;
             let right = self.parse_bitxor()?;
+            let end = self.previous();
             expr = Expr::Binary {
                 left: Box::new(expr),
                 op: BinaryOp::BitOr,
                 right: Box::new(right),
+                span: Span::new(op_offset, end.offset + end.length - op_offset),
             };
         }
 
@@ -124,11 +137,14 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_bitand()?;
 
         while self.match_token(TokenKind::Caret) {
+            let op_offset = self.previous().offset;
             let right = self.parse_bitand()?;
+            let end = self.previous();
             expr = Expr::Binary {
                 left: Box::new(expr),
                 op: BinaryOp::BitXor,
                 right: Box::new(right),
+                span: Span::new(op_offset, end.offset + end.length - op_offset),
             };
         }
 
@@ -140,11 +156,14 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_equality()?;
 
         while self.match_token(TokenKind::Ampersand) {
+            let op_offset = self.previous().offset;
             let right = self.parse_equality()?;
+            let end = self.previous();
             expr = Expr::Binary {
                 left: Box::new(expr),
                 op: BinaryOp::BitAnd,
                 right: Box::new(right),
+                span: Span::new(op_offset, end.offset + end.length - op_offset),
             };
         }
 
@@ -156,6 +175,7 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_comparison()?;
 
         loop {
+            let op_offset = self.peek().offset;
             let op = match self.peek().kind {
                 TokenKind::EqualEqual => BinaryOp::Eq,
                 TokenKind::BangEqual => BinaryOp::Ne,
@@ -163,10 +183,12 @@ impl<'a> Parser<'a> {
             };
             self.advance();
             let right = self.parse_comparison()?;
+            let end = self.previous();
             expr = Expr::Binary {
                 left: Box::new(expr),
                 op,
                 right: Box::new(right),
+                span: Span::new(op_offset, end.offset + end.length - op_offset),
             };
         }
 
@@ -178,6 +200,7 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_shift()?;
 
         loop {
+            let op_offset = self.peek().offset;
             let op = match self.peek().kind {
                 TokenKind::Less => BinaryOp::Lt,
                 TokenKind::LessEqual => BinaryOp::Le,
@@ -187,10 +210,12 @@ impl<'a> Parser<'a> {
             };
             self.advance();
             let right = self.parse_shift()?;
+            let end = self.previous();
             expr = Expr::Binary {
                 left: Box::new(expr),
                 op,
                 right: Box::new(right),
+                span: Span::new(op_offset, end.offset + end.length - op_offset),
             };
         }
 
@@ -202,6 +227,7 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_additive()?;
 
         loop {
+            let op_offset = self.peek().offset;
             let op = match self.peek().kind {
                 TokenKind::LessLess => BinaryOp::Shl,
                 TokenKind::GreaterGreater => BinaryOp::Shr,
@@ -209,10 +235,12 @@ impl<'a> Parser<'a> {
             };
             self.advance();
             let right = self.parse_additive()?;
+            let end = self.previous();
             expr = Expr::Binary {
                 left: Box::new(expr),
                 op,
                 right: Box::new(right),
+                span: Span::new(op_offset, end.offset + end.length - op_offset),
             };
         }
 
@@ -224,6 +252,7 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_multiplicative()?;
 
         loop {
+            let op_offset = self.peek().offset;
             let op = match self.peek().kind {
                 TokenKind::Plus => BinaryOp::Add,
                 TokenKind::Minus => BinaryOp::Sub,
@@ -231,10 +260,12 @@ impl<'a> Parser<'a> {
             };
             self.advance();
             let right = self.parse_multiplicative()?;
+            let end = self.previous();
             expr = Expr::Binary {
                 left: Box::new(expr),
                 op,
                 right: Box::new(right),
+                span: Span::new(op_offset, end.offset + end.length - op_offset),
             };
         }
 
@@ -246,6 +277,7 @@ impl<'a> Parser<'a> {
         let mut expr = self.parse_unary()?;
 
         loop {
+            let op_offset = self.peek().offset;
             let op = match self.peek().kind {
                 TokenKind::Star => BinaryOp::Mul,
                 TokenKind::Slash => BinaryOp::Div,
@@ -254,10 +286,12 @@ impl<'a> Parser<'a> {
             };
             self.advance();
             let right = self.parse_unary()?;
+            let end = self.previous();
             expr = Expr::Binary {
                 left: Box::new(expr),
                 op,
                 right: Box::new(right),
+                span: Span::new(op_offset, end.offset + end.length - op_offset),
             };
         }
 
@@ -352,15 +386,18 @@ impl<'a> Parser<'a> {
 
     /// Parse postfix: a++, a--, a[i], a.b, a->b, a(args)
     fn parse_postfix(&mut self) -> Option<Expr> {
+        let start_offset = self.peek().offset;
         let mut expr = self.parse_primary()?;
 
         loop {
             if self.match_token(TokenKind::LeftParen) {
                 // Function call
                 let args = self.parse_call_args()?;
+                let end = self.previous();
                 expr = Expr::Call {
                     callee: Box::new(expr),
                     args,
+                    span: Span::new(start_offset, end.offset + end.length - start_offset),
                 };
             } else if self.match_token(TokenKind::LeftBracket) {
                 // Array index
@@ -374,7 +411,7 @@ impl<'a> Parser<'a> {
                 // Member access
                 let member = self.expect_identifier("expected member name after '.'")?;
                 
-                // Check for .unwrap() or .unwrap_or()
+                // Check for .unwrap() or .unwrap_or() or .is_some() or .is_none()
                 if member == "unwrap" && self.check(TokenKind::LeftParen) {
                     self.advance(); // consume '('
                     self.expect(TokenKind::RightParen, "expected ')' after unwrap")?;
@@ -387,6 +424,14 @@ impl<'a> Parser<'a> {
                         expr: Box::new(expr),
                         default: Box::new(default),
                     };
+                } else if member == "is_some" && self.check(TokenKind::LeftParen) {
+                    self.advance(); // consume '('
+                    self.expect(TokenKind::RightParen, "expected ')' after is_some")?;
+                    expr = Expr::IsSome(Box::new(expr));
+                } else if member == "is_none" && self.check(TokenKind::LeftParen) {
+                    self.advance(); // consume '('
+                    self.expect(TokenKind::RightParen, "expected ')' after is_none")?;
+                    expr = Expr::IsNone(Box::new(expr));
                 } else {
                     expr = Expr::Member {
                         object: Box::new(expr),

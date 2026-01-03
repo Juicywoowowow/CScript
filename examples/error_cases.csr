@@ -1,0 +1,32 @@
+// error_cases.csr - Test error detection (should NOT compile)
+#include <stdio.h>
+
+void takes_two(int a, int b) {}
+void takes_string(char* msg) {}
+
+int main() {
+    // === FUNCTION ARGUMENT ERRORS ===
+    
+    // Wrong argument count
+    takes_two(1);               // E200: expects 2, got 1
+    takes_two(1, 2, 3);         // E200: expects 2, got 3
+    
+    // Wrong argument type
+    takes_string(42);           // E200: type mismatch
+    takes_two("a", "b");        // E200: type mismatch x2
+    
+    // === MUTABILITY ERRORS ===
+    
+    int x = 10;
+    x = 20;                     // E300: cannot assign to immutable
+    
+    // === UNDEFINED VARIABLE ===
+    
+    int y = undefined_var;      // E205: undefined variable
+    
+    // === VOID VARIABLE ===
+    
+    void bad;                   // E210: variable declared as void
+    
+    return 0;
+}

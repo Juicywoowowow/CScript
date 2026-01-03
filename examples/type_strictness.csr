@@ -1,0 +1,38 @@
+// type_strictness.csr - Test type system enforcement
+#include <stdio.h>
+
+void takes_two(int a, int b) {
+    printf("a=%d, b=%d\n", a, b);
+}
+
+void takes_string(char* msg) {
+    printf("%s\n", msg);
+}
+
+int main() {
+    // These should produce errors:
+    takes_two(1);           // Error: expected 2 args, got 1
+    takes_two(1, 2, 3);     // Error: expected 2 args, got 3
+    takes_string(42);       // Error: expected char*, got int
+    
+    // Narrowing conversion warnings:
+    int64 big = 100;
+    int32 small = big;      // Warning: narrowing from int64 to int32
+    int16 smaller = small;  // Warning: narrowing from int32 to int16
+    int8 tiny = smaller;    // Warning: narrowing from int16 to int8
+    
+    // Signed/unsigned comparison warnings:
+    int x = -1;
+    uint32 y = 5;
+    if (x < y) {            // Warning: signed/unsigned comparison
+        printf("x < y\n");
+    }
+    
+    // This is correct (no warnings):
+    takes_two(10, 20);
+    takes_string("hello");
+    int32 a = 10;
+    int32 b = a;            // Same size, no warning
+    
+    return 0;
+}

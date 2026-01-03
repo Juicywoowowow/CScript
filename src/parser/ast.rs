@@ -1,5 +1,27 @@
 //! Abstract Syntax Tree definitions for CScript.
 
+/// Source span for tracking positions in error messages
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Span {
+    /// Byte offset from start of source
+    pub offset: usize,
+    /// Length in bytes
+    pub length: usize,
+}
+
+impl Span {
+    pub fn new(offset: usize, length: usize) -> Self {
+        Self { offset, length }
+    }
+    
+    /// Create a span that covers both self and other
+    pub fn merge(&self, other: &Span) -> Span {
+        let start = self.offset.min(other.offset);
+        let end = (self.offset + self.length).max(other.offset + other.length);
+        Span::new(start, end - start)
+    }
+}
+
 /// The root of the AST - a complete program
 #[derive(Debug, Clone)]
 pub struct Program {
@@ -23,6 +45,7 @@ pub enum Declaration {
 pub struct FunctionDecl {
     pub return_type: TypeSpec,
     pub name: String,
+    pub name_span: Span,  // Source location of the function name
     pub params: Vec<Parameter>,
     pub body: Option<Block>,
     pub is_static: bool,
@@ -35,6 +58,7 @@ pub struct FunctionDecl {
 pub struct Parameter {
     pub type_spec: TypeSpec,
     pub name: Option<String>,
+    pub name_span: Option<Span>,  // Source location of parameter name (if named)
     pub is_mutable: bool,
 }
 
@@ -43,6 +67,7 @@ pub struct Parameter {
 pub struct VariableDecl {
     pub type_spec: TypeSpec,
     pub name: String,
+    pub name_span: Span,  // Source location of the variable name
     pub array_dims: Vec<Option<Expr>>,
     pub initializer: Option<Expr>,
     pub is_mutable: bool,
@@ -274,6 +299,9 @@ pub enum Stmt {
     /// Label statement
     Label(String),
     
+    /// Local struct declaration
+    StructDecl(StructDecl),
+    
     /// Empty statement
     Empty,
 }
@@ -320,7 +348,7 @@ pub enum Expr {
     /// None literal (for Option)
     None,
     
-    /// Identifier
+    /// Identifier with span
     Identifier(String),
     
     /// Binary operation
@@ -328,6 +356,7 @@ pub enum Expr {
         left: Box<Expr>,
         op: BinaryOp,
         right: Box<Expr>,
+        span: Span,
     },
     
     /// Unary operation
@@ -341,12 +370,14 @@ pub enum Expr {
         target: Box<Expr>,
         op: AssignOp,
         value: Box<Expr>,
+        span: Span,
     },
     
-    /// Function call
+    /// Function call with span
     Call {
         callee: Box<Expr>,
         args: Vec<Expr>,
+        span: Span,
     },
     
     /// Array/pointer indexing
@@ -400,6 +431,12 @@ pub enum Expr {
         expr: Box<Expr>,
         default: Box<Expr>,
     },
+    
+    /// Check if Option has value (.is_some())
+    IsSome(Box<Expr>),
+    
+    /// Check if Option is empty (.is_none())
+    IsNone(Box<Expr>),
 }
 
 /// Sizeof argument

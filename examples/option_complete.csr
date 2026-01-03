@@ -1,0 +1,55 @@
+// option_complete.csr - Full test of Option type features
+#include <stdio.h>
+
+// Test implicit wrapping in return
+Option<int> safe_divide(int a, int b) {
+    if (b == 0) {
+        return none;
+    }
+    return a / b;  // Implicit wrap: int -> Option<int>
+}
+
+// Test returning none explicitly
+Option<int*> find_value(int* arr, int len, int target) {
+    for (int i = 0; i < len; i++) {
+        if (arr[i] == target) {
+            return &arr[i];  // Implicit wrap
+        }
+    }
+    return none;
+}
+
+int main() {
+    // Test is_some() / is_none()
+    Option<int> result = safe_divide(10, 2);
+    
+    if (result.is_some()) {
+        printf("Result is present\n");
+    }
+    
+    Option<int> div_zero = safe_divide(10, 0);
+    
+    if (div_zero.is_none()) {
+        printf("Division by zero avoided\n");
+    }
+    
+    // Test unwrap
+    int val = result.unwrap();
+    printf("Value: %d\n", val);
+    
+    // Test unwrap_or
+    int safe_val = div_zero.unwrap_or(-1);
+    printf("Safe value: %d\n", safe_val);
+    
+    // Test match
+    match (result) {
+        some(v) => {
+            printf("Got value: %d\n", v);
+        }
+        none => {
+            printf("No value\n");
+        }
+    }
+    
+    return 0;
+}

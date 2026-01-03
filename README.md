@@ -125,7 +125,7 @@ Options:
 - [x] Boolean type
 - [x] Structs & Enums
 - [x] Rich error messages
-- [ ] Option types (partial)
+- [x] Option types (partial)
 - [ ] Struct field type resolution
 
 ## License

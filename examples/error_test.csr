@@ -1,0 +1,17 @@
+// error_test.csr - Test file for rich error messages
+// This file contains intentional errors to verify error reporting
+
+int main() {
+    // Error 1: Immutable variable without initializer
+    int uninitialized_var;
+    
+    // Error 2: Type mismatch in initialization
+    struct Point { int x; int y; };
+    struct Point p = { .x = 10, .y = 20 };
+    int wrong_type = p;  // Should be: expected 'int', found 'struct Point'
+    
+    // Error 3: Void variable
+    void bad_void;
+    
+    return 0;
+}

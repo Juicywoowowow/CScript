@@ -94,15 +94,15 @@ impl<'a> Parser<'a> {
         let type_spec = self.parse_type()?;
 
         // Parse declarator (name and possible pointer/array modifiers)
-        let name = self.expect_identifier("expected identifier after type")?;
+        let (name, name_span) = self.expect_identifier_with_span("expected identifier after type")?;
 
         // Function declaration
         if self.check(TokenKind::LeftParen) {
-            return self.function_declaration(type_spec, name, is_static, is_extern, is_inline);
+            return self.function_declaration(type_spec, name, name_span, is_static, is_extern, is_inline);
         }
 
         // Variable declaration
-        self.variable_declaration(type_spec, name, is_mutable, is_static, is_extern)
+        self.variable_declaration(type_spec, name, name_span, is_mutable, is_static, is_extern)
     }
 
     /// Parse function declaration
@@ -110,6 +110,7 @@ impl<'a> Parser<'a> {
         &mut self,
         return_type: TypeSpec,
         name: String,
+        name_span: Span,
         is_static: bool,
         is_extern: bool,
         is_inline: bool,
@@ -123,15 +124,19 @@ impl<'a> Parser<'a> {
                 // Check for 'mut' on parameter
                 let is_mutable = self.match_token(TokenKind::Mut);
                 let param_type = self.parse_type()?;
-                let param_name = if self.check(TokenKind::Identifier) {
-                    Some(self.advance().lexeme.clone())
+                
+                // Get parameter name with span if present
+                let (param_name, param_span) = if self.check(TokenKind::Identifier) {
+                    let (n, s) = self.expect_identifier_with_span("expected parameter name")?;
+                    (Some(n), Some(s))
                 } else {
-                    None
+                    (None, None)
                 };
 
                 params.push(Parameter {
                     type_spec: param_type,
                     name: param_name,
+                    name_span: param_span,
                     is_mutable,
                 });
 
@@ -154,6 +159,7 @@ impl<'a> Parser<'a> {
         Some(Declaration::Function(FunctionDecl {
             return_type,
             name,
+            name_span,
             params,
             body,
             is_static,
@@ -167,6 +173,7 @@ impl<'a> Parser<'a> {
         &mut self,
         type_spec: TypeSpec,
         name: String,
+        name_span: Span,
         is_mutable: bool,
         is_static: bool,
         is_extern: bool,
@@ -186,6 +193,7 @@ impl<'a> Parser<'a> {
         Some(Declaration::Variable(VariableDecl {
             type_spec,
             name,
+            name_span,
             array_dims,
             initializer,
             is_mutable,
@@ -568,6 +576,16 @@ impl<'a> Parser<'a> {
     fn expect_identifier(&mut self, message: &str) -> Option<String> {
         if self.check(TokenKind::Identifier) {
             Some(self.advance().lexeme.clone())
+        } else {
+            self.error_at_current(codes::EXPECTED_IDENTIFIER, message);
+            None
+        }
+    }
+
+    fn expect_identifier_with_span(&mut self, message: &str) -> Option<(String, Span)> {
+        if self.check(TokenKind::Identifier) {
+            let token = self.advance();
+            Some((token.lexeme.clone(), Span::new(token.offset, token.length)))
         } else {
             self.error_at_current(codes::EXPECTED_IDENTIFIER, message);
             None

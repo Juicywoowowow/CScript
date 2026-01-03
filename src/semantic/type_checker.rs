@@ -1,7 +1,7 @@
 //! Type checker for CScript semantic analysis.
 //! Enforces CScript's stricter typing rules over C.
 
-use super::{Symbol, SymbolKind, SymbolTable, FieldDef, StructDef, EnumDef, TypeDef};
+use super::{Symbol, SymbolKind, SymbolTable, FieldDef, StructDef, EnumDef, TypeDef, FunctionDef, ParamDef};
 use crate::diagnostics::{codes, Diagnostic, DiagnosticReporter};
 use crate::parser::*;
 
@@ -122,6 +122,17 @@ impl<'a> TypeChecker<'a> {
 
     /// Check a function declaration/definition
     fn check_function(&mut self, func: &FunctionDecl) {
+        // Register function for argument validation (even for declarations)
+        let func_def = FunctionDef {
+            name: func.name.clone(),
+            return_type: func.return_type.clone(),
+            params: func.params.iter().map(|p| ParamDef {
+                name: p.name.clone(),
+                type_spec: p.type_spec.clone(),
+            }).collect(),
+        };
+        self.symbols.define_function(func_def);
+        
         if func.body.is_none() {
             return; // Just a declaration
         }
@@ -177,13 +188,16 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Check a variable declaration
-    fn check_variable(&mut self, var: &VariableDecl, is_global: bool) {
+    fn check_variable(&mut self, var: &VariableDecl, _is_global: bool) {
         // Check for void type
         if matches!(var.type_spec.base, BaseType::Void) && var.type_spec.pointer_depth == 0 {
-            self.reporter.add(
+            self.reporter.report_with_label(
                 Diagnostic::error(codes::VOID_VARIABLE,
                     format!("variable '{}' declared as void", var.name))
-                    .with_help("void can only be used as a pointer type (void*)")
+                    .with_help("void can only be used as a pointer type (void*)"),
+                var.name_span.offset,
+                var.name_span.length,
+                "declared as void here"
             );
         }
 
@@ -191,21 +205,39 @@ impl<'a> TypeChecker<'a> {
         if let Some(ref init) = var.initializer {
             if let Some(init_type) = self.check_expr(init) {
                 if !self.types_compatible(&var.type_spec, &init_type) {
-                    self.reporter.add(
+                    self.reporter.report_with_label(
                         Diagnostic::error(codes::TYPE_MISMATCH,
                             format!("type mismatch in initialization of '{}'", var.name))
                             .with_help(format!("expected '{}', found '{}'",
                                 self.type_to_string(&var.type_spec),
-                                self.type_to_string(&init_type)))
+                                self.type_to_string(&init_type))),
+                        var.name_span.offset,
+                        var.name_span.length,
+                        &format!("expected '{}'", self.type_to_string(&var.type_spec))
+                    );
+                } else if self.is_narrowing_conversion(&var.type_spec, &init_type) {
+                    // Warn about narrowing conversion
+                    self.reporter.report_with_label(
+                        Diagnostic::warning(codes::NARROWING_CONVERSION,
+                            format!("narrowing conversion in initialization of '{}'", var.name))
+                            .with_help(format!("converting from '{}' to '{}' may lose data",
+                                self.type_to_string(&init_type),
+                                self.type_to_string(&var.type_spec))),
+                        var.name_span.offset,
+                        var.name_span.length,
+                        "narrowing conversion here"
                     );
                 }
             }
         } else if !var.is_mutable && !var.is_extern {
             // Immutable variables must be initialized
-            self.reporter.add(
+            self.reporter.report_with_label(
                 Diagnostic::error(codes::UNINITIALIZED_VARIABLE,
                     format!("immutable variable '{}' must be initialized", var.name))
-                    .with_help("add an initializer or mark as 'mut' for later assignment")
+                    .with_help("add an initializer or mark as 'mut' for later assignment"),
+                var.name_span.offset,
+                var.name_span.length,
+                "declared here without initializer"
             );
         }
 
@@ -217,21 +249,27 @@ impl<'a> TypeChecker<'a> {
             is_mutable: var.is_mutable,
             is_initialized: var.initializer.is_some(),
             is_used: false,
-            offset: 0,
+            offset: var.name_span.offset,  // Store the span offset for later error reporting
         };
 
         // Check for shadowing
         if self.symbols.shadows(&var.name) {
-            self.reporter.add(
+            self.reporter.report_with_label(
                 Diagnostic::warning(codes::SHADOWED_VARIABLE,
-                    format!("variable '{}' shadows a variable in an outer scope", var.name))
+                    format!("variable '{}' shadows a variable in an outer scope", var.name)),
+                var.name_span.offset,
+                var.name_span.length,
+                "shadows outer variable"
             );
         }
 
         if let Err(_) = self.symbols.define(symbol) {
-            self.reporter.add(
+            self.reporter.report_with_label(
                 Diagnostic::error(codes::UNDEFINED_VARIABLE,
-                    format!("redefinition of '{}'", var.name))
+                    format!("redefinition of '{}'", var.name)),
+                var.name_span.offset,
+                var.name_span.length,
+                "already defined"
             );
         }
     }
@@ -366,31 +404,39 @@ impl<'a> TypeChecker<'a> {
             }
 
             Stmt::Match { expr, arms } => {
-                // Verify expr is an Option type
-                if let Some(expr_type) = self.check_expr(expr) {
+                // Verify expr is an Option type and extract inner type
+                let inner_type = if let Some(expr_type) = self.check_expr(expr) {
                     if !expr_type.is_option() {
                         self.reporter.add(
                             Diagnostic::error(codes::TYPE_MISMATCH,
                                 "match expression must be an Option type")
                         );
+                        None
+                    } else if let BaseType::Option(inner) = &expr_type.base {
+                        Some(inner.as_ref().clone())
+                    } else {
+                        None
                     }
-                }
+                } else {
+                    None
+                };
 
                 for arm in arms {
                     self.symbols.push_scope(None);
                     
                     if let MatchPattern::Some(ref name) = arm.pattern {
-                        // Bind the unwrapped value
-                        // TODO: Get inner type from Option<T>
+                        // Bind the unwrapped value with the correct inner type
+                        let bound_type = inner_type.clone().unwrap_or(TypeSpec {
+                            base: BaseType::Void,
+                            pointer_depth: 1,
+                            is_const: false,
+                            is_volatile: false,
+                        });
+                        
                         let symbol = Symbol {
                             name: name.clone(),
                             kind: SymbolKind::Variable,
-                            type_spec: TypeSpec {
-                                base: BaseType::Void, // TODO: proper inner type
-                                pointer_depth: 1,
-                                is_const: false,
-                                is_volatile: false,
-                            },
+                            type_spec: bound_type,
                             is_mutable: false,
                             is_initialized: true,
                             is_used: false,
@@ -408,10 +454,26 @@ impl<'a> TypeChecker<'a> {
                 let ret_type = self.current_return_type.clone();
                 if let Some(ref expected_ret_type) = ret_type {
                     let is_void = matches!(expected_ret_type.base, BaseType::Void);
+                    let is_option = expected_ret_type.is_option();
+                    
                     match (expr, is_void) {
                         (Some(e), false) => {
                             if let Some(expr_type) = self.check_expr(e) {
-                                if !self.types_compatible(expected_ret_type, &expr_type) {
+                                // Check for implicit Option wrapping
+                                // If function returns Option<T> and we have T, that's OK
+                                let compatible = if is_option {
+                                    if let BaseType::Option(inner) = &expected_ret_type.base {
+                                        // Allow both T and Option<T> as return values
+                                        self.types_compatible(expected_ret_type, &expr_type) ||
+                                        self.types_compatible(inner.as_ref(), &expr_type)
+                                    } else {
+                                        self.types_compatible(expected_ret_type, &expr_type)
+                                    }
+                                } else {
+                                    self.types_compatible(expected_ret_type, &expr_type)
+                                };
+                                
+                                if !compatible {
                                     self.reporter.add(
                                         Diagnostic::error(codes::RETURN_TYPE_MISMATCH,
                                             "return type mismatch")
@@ -458,6 +520,11 @@ impl<'a> TypeChecker<'a> {
             }
 
             Stmt::Goto(_) | Stmt::Label(_) | Stmt::Empty => {}
+            
+            Stmt::StructDecl(s) => {
+                // Register local struct type
+                self.check_struct(s);
+            }
         }
     }
 
@@ -520,12 +587,12 @@ impl<'a> TypeChecker<'a> {
                 }
             }
 
-            Expr::Binary { left, op, right } => {
+            Expr::Binary { left, op, right, span } => {
                 let left_type = self.check_expr(left)?;
                 let right_type = self.check_expr(right)?;
                 
                 // Check for valid operand types
-                self.check_binary_types(&left_type, *op, &right_type)
+                self.check_binary_types(&left_type, *op, &right_type, *span)
             }
 
             Expr::Unary { op, operand } => {
@@ -533,15 +600,18 @@ impl<'a> TypeChecker<'a> {
                 self.check_unary_type(*op, &operand_type)
             }
 
-            Expr::Assign { target, op: _, value } => {
+            Expr::Assign { target, op: _, value, span } => {
                 // Check mutability
                 if let Expr::Identifier(name) = target.as_ref() {
                     if let Some(symbol) = self.symbols.lookup(name) {
                         if !symbol.is_mutable {
-                            self.reporter.add(
+                            self.reporter.report_with_label(
                                 Diagnostic::error(codes::MUTATE_IMMUTABLE,
                                     format!("cannot assign to immutable variable '{}'", name))
-                                    .with_help("declare variable with 'mut' to allow assignment")
+                                    .with_help("declare variable with 'mut' to allow assignment"),
+                                span.offset,
+                                span.length,
+                                "assignment here"
                             );
                         }
                     }
@@ -551,34 +621,82 @@ impl<'a> TypeChecker<'a> {
                 let value_type = self.check_expr(value)?;
 
                 if !self.types_compatible(&target_type, &value_type) {
-                    self.reporter.add(
+                    self.reporter.report_with_label(
                         Diagnostic::error(codes::TYPE_MISMATCH,
                             "type mismatch in assignment")
                             .with_help(format!("cannot assign '{}' to '{}'",
                                 self.type_to_string(&value_type),
-                                self.type_to_string(&target_type)))
+                                self.type_to_string(&target_type))),
+                        span.offset,
+                        span.length,
+                        "assignment here"
+                    );
+                } else if self.is_narrowing_conversion(&target_type, &value_type) {
+                    self.reporter.report_with_label(
+                        Diagnostic::warning(codes::NARROWING_CONVERSION,
+                            "narrowing conversion in assignment")
+                            .with_help(format!("converting from '{}' to '{}' may lose data",
+                                self.type_to_string(&value_type),
+                                self.type_to_string(&target_type))),
+                        span.offset,
+                        span.length,
+                        "narrowing here"
                     );
                 }
 
                 Some(target_type)
             }
 
-            Expr::Call { callee, args } => {
+            Expr::Call { callee, args, span } => {
                 // Get function type
                 if let Expr::Identifier(name) = callee.as_ref() {
-                    let func_type = self.symbols.lookup(name).map(|s| s.type_spec.clone());
+                    // Look up function signature
+                    let func_def = self.symbols.lookup_function(name).cloned();
                     
-                    if let Some(ret_type) = func_type {
+                    if let Some(func) = func_def {
                         self.symbols.mark_used(name);
                         
-                        // Check each argument
-                        for arg in args {
-                            self.check_expr(arg);
+                        // Validate argument count
+                        let expected = func.params.len();
+                        let got = args.len();
+                        
+                        if expected != got {
+                            self.reporter.report_with_label(
+                                Diagnostic::error(codes::TYPE_MISMATCH,
+                                    format!("function '{}' expects {} argument{}, got {}",
+                                        name, expected, if expected == 1 { "" } else { "s" }, got)),
+                                span.offset,
+                                span.length,
+                                "called here"
+                            );
                         }
                         
-                        return Some(ret_type);
+                        // Check each argument type
+                        for (i, arg) in args.iter().enumerate() {
+                            if let Some(arg_type) = self.check_expr(arg) {
+                                if i < func.params.len() {
+                                    let param = &func.params[i];
+                                    if !self.types_compatible(&param.type_spec, &arg_type) {
+                                        let fallback = format!("argument {}", i + 1);
+                                        let param_name = param.name.as_deref().unwrap_or(&fallback);
+                                        self.reporter.report_with_label(
+                                            Diagnostic::error(codes::TYPE_MISMATCH,
+                                                format!("type mismatch for parameter '{}'", param_name))
+                                                .with_help(format!("expected '{}', found '{}'",
+                                                    self.type_to_string(&param.type_spec),
+                                                    self.type_to_string(&arg_type))),
+                                            span.offset,
+                                            span.length,
+                                            &format!("argument {} here", i + 1)
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        
+                        return Some(func.return_type.clone());
                     } else {
-                        // Could be a C library function - allow it
+                        // Could be a C library function - allow it but still check args
                         for arg in args {
                             self.check_expr(arg);
                         }
@@ -628,12 +746,44 @@ impl<'a> TypeChecker<'a> {
                 })
             }
 
-            Expr::Member { object, member: _ } => {
-                self.check_expr(object)
-                // TODO: Check struct field exists
+            Expr::Member { object, member } => {
+                let obj_type = self.check_expr(object)?;
+                
+                // Get struct name from the object type
+                let struct_name = match &obj_type.base {
+                    BaseType::Struct(name) => name.clone(),
+                    _ => {
+                        self.reporter.add(
+                            Diagnostic::error(codes::TYPE_MISMATCH,
+                                format!("'.' operator requires a struct type, found '{}'",
+                                    self.type_to_string(&obj_type)))
+                        );
+                        return None;
+                    }
+                };
+                
+                // Look up the struct definition
+                if let Some(TypeDef::Struct(struct_def)) = self.symbols.lookup_type(&struct_name) {
+                    // Find the field by name
+                    if let Some(field) = struct_def.fields.iter().find(|f| &f.name == member) {
+                        Some(field.type_spec.clone())
+                    } else {
+                        self.reporter.add(
+                            Diagnostic::error(codes::UNDEFINED_VARIABLE,
+                                format!("struct '{}' has no field named '{}'", struct_name, member))
+                        );
+                        None
+                    }
+                } else {
+                    self.reporter.add(
+                        Diagnostic::error(codes::UNDEFINED_VARIABLE,
+                            format!("unknown struct type '{}'", struct_name))
+                    );
+                    None
+                }
             }
 
-            Expr::PtrMember { pointer, member: _ } => {
+            Expr::PtrMember { pointer, member } => {
                 let ptr_type = self.check_expr(pointer)?;
                 
                 if ptr_type.pointer_depth == 0 {
@@ -641,15 +791,41 @@ impl<'a> TypeChecker<'a> {
                         Diagnostic::error(codes::DEREFERENCE_NON_POINTER,
                             "'->' requires a pointer type")
                     );
+                    return None;
                 }
                 
-                // TODO: Check struct field exists
-                Some(TypeSpec {
-                    base: ptr_type.base,
-                    pointer_depth: 0,
-                    is_const: ptr_type.is_const,
-                    is_volatile: ptr_type.is_volatile,
-                })
+                // Get struct name from the pointer type
+                let struct_name = match &ptr_type.base {
+                    BaseType::Struct(name) => name.clone(),
+                    _ => {
+                        self.reporter.add(
+                            Diagnostic::error(codes::TYPE_MISMATCH,
+                                format!("'->' operator requires a pointer to struct type, found '{}'",
+                                    self.type_to_string(&ptr_type)))
+                        );
+                        return None;
+                    }
+                };
+                
+                // Look up the struct definition
+                if let Some(TypeDef::Struct(struct_def)) = self.symbols.lookup_type(&struct_name) {
+                    // Find the field by name
+                    if let Some(field) = struct_def.fields.iter().find(|f| &f.name == member) {
+                        Some(field.type_spec.clone())
+                    } else {
+                        self.reporter.add(
+                            Diagnostic::error(codes::UNDEFINED_VARIABLE,
+                                format!("struct '{}' has no field named '{}'", struct_name, member))
+                        );
+                        None
+                    }
+                } else {
+                    self.reporter.add(
+                        Diagnostic::error(codes::UNDEFINED_VARIABLE,
+                            format!("unknown struct type '{}'", struct_name))
+                    );
+                    None
+                }
             }
 
             Expr::Cast { type_spec, expr } => {
@@ -742,6 +918,44 @@ impl<'a> TypeChecker<'a> {
                     None
                 }
             }
+            
+            Expr::IsSome(expr) => {
+                let expr_type = self.check_expr(expr)?;
+                
+                if !expr_type.is_option() {
+                    self.reporter.add(
+                        Diagnostic::error(codes::TYPE_MISMATCH,
+                            ".is_some() can only be used on Option types")
+                    );
+                }
+                
+                // Returns bool
+                Some(TypeSpec {
+                    base: BaseType::Bool,
+                    pointer_depth: 0,
+                    is_const: false,
+                    is_volatile: false,
+                })
+            }
+            
+            Expr::IsNone(expr) => {
+                let expr_type = self.check_expr(expr)?;
+                
+                if !expr_type.is_option() {
+                    self.reporter.add(
+                        Diagnostic::error(codes::TYPE_MISMATCH,
+                            ".is_none() can only be used on Option types")
+                    );
+                }
+                
+                // Returns bool
+                Some(TypeSpec {
+                    base: BaseType::Bool,
+                    pointer_depth: 0,
+                    is_const: false,
+                    is_volatile: false,
+                })
+            }
         }
     }
 
@@ -763,7 +977,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Check binary operation types
-    fn check_binary_types(&mut self, left: &TypeSpec, op: BinaryOp, right: &TypeSpec) -> Option<TypeSpec> {
+    fn check_binary_types(&mut self, left: &TypeSpec, op: BinaryOp, right: &TypeSpec, span: Span) -> Option<TypeSpec> {
         // For now, just check basic compatibility
         // A full implementation would handle numeric promotions
         
@@ -780,6 +994,20 @@ impl<'a> TypeChecker<'a> {
             
             BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | 
             BinaryOp::Gt | BinaryOp::Ge => {
+                // Check for signed/unsigned comparison
+                if self.is_signed_unsigned_comparison(left, right) {
+                    self.reporter.report_with_label(
+                        Diagnostic::warning(codes::SIGNED_UNSIGNED_COMPARE,
+                            "comparison between signed and unsigned integers")
+                            .with_help(format!("comparing '{}' with '{}'",
+                                self.type_to_string(left),
+                                self.type_to_string(right))),
+                        span.offset,
+                        span.length,
+                        "comparison here"
+                    );
+                }
+                
                 // Comparison operators return bool
                 Some(TypeSpec {
                     base: BaseType::Bool,
@@ -854,21 +1082,32 @@ impl<'a> TypeChecker<'a> {
     fn base_types_compatible(&self, a: &BaseType, b: &BaseType) -> bool {
         use BaseType::*;
         
+        // Check if both are integer types - all integers are compatible (with narrowing warnings)
+        let is_int_a = matches!(a, Int8 | Int16 | Int32 | Int64 | Uint8 | Uint16 | Uint32 | Uint64 |
+            Int | Long | Short | UnsignedInt | UnsignedLong | UnsignedShort | Char | UnsignedChar | Bool);
+        let is_int_b = matches!(b, Int8 | Int16 | Int32 | Int64 | Uint8 | Uint16 | Uint32 | Uint64 |
+            Int | Long | Short | UnsignedInt | UnsignedLong | UnsignedShort | Char | UnsignedChar | Bool);
+        
+        if is_int_a && is_int_b {
+            return true;
+        }
+        
+        // Check if both are floating point types
+        let is_float_a = matches!(a, Float | Float32 | Double | Float64);
+        let is_float_b = matches!(b, Float | Float32 | Double | Float64);
+        
+        if is_float_a && is_float_b {
+            return true;
+        }
+        
+        // Allow int <-> float conversions (C allows this)
+        if (is_int_a && is_float_b) || (is_float_a && is_int_b) {
+            return true;
+        }
+        
         match (a, b) {
-            // Same type
-            (Int8, Int8) | (Int16, Int16) | (Int32, Int32) | (Int64, Int64) |
-            (Uint8, Uint8) | (Uint16, Uint16) | (Uint32, Uint32) | (Uint64, Uint64) |
-            (Float32, Float32) | (Float64, Float64) |
-            (Int, Int) | (Long, Long) | (Short, Short) |
-            (Float, Float) | (Double, Double) |
-            (Char, Char) | (Void, Void) | (Bool, Bool) => true,
-            
-            // Allow int <-> int32, etc.
-            (Int, Int32) | (Int32, Int) => true,
-            (Long, Int64) | (Int64, Long) => true,
-            (Short, Int16) | (Int16, Short) => true,
-            (Float, Float32) | (Float32, Float) => true,
-            (Double, Float64) | (Float64, Double) => true,
+            // Void
+            (Void, Void) => true,
             
             // Named types
             (Named(a), Named(b)) => a == b,
@@ -877,7 +1116,16 @@ impl<'a> TypeChecker<'a> {
             (Union(a), Union(b)) => a == b,
             
             // Enums are compatible with int
-            (Enum(_), Int) | (Int, Enum(_)) => true,
+            (Enum(_), _) if is_int_b => true,
+            (_, Enum(_)) if is_int_a => true,
+            
+            // Option types - compare inner types
+            (Option(inner_a), Option(inner_b)) => {
+                self.types_compatible(inner_a, inner_b)
+            }
+            
+            // Void is compatible with any Option (for 'none' literal)
+            (Void, Option(_)) | (Option(_), Void) => true,
             
             _ => false,
         }
@@ -896,6 +1144,71 @@ impl<'a> TypeChecker<'a> {
             BaseType::UnsignedInt | BaseType::UnsignedLong | BaseType::UnsignedShort |
             BaseType::Char | BaseType::UnsignedChar | BaseType::Bool
         )
+    }
+    
+    /// Get the size in bits of a numeric type (for narrowing detection)
+    fn numeric_type_size(&self, base: &BaseType) -> Option<u8> {
+        match base {
+            BaseType::Bool => Some(1),
+            BaseType::Int8  => Some(8),
+            BaseType::Uint8 => Some(8),
+            BaseType::Char  => Some(8),
+            BaseType::UnsignedChar => Some(8),
+            BaseType::Int16 | BaseType::Short => Some(16),
+            BaseType::Uint16 | BaseType::UnsignedShort => Some(16),
+            BaseType::Int32 | BaseType::Int => Some(32),
+            BaseType::Uint32 | BaseType::UnsignedInt => Some(32),
+            BaseType::Float | BaseType::Float32 => Some(32),
+            BaseType::Int64 | BaseType::Long => Some(64),
+            BaseType::Uint64 | BaseType::UnsignedLong => Some(64),
+            BaseType::Double | BaseType::Float64 => Some(64),
+            _ => None,
+        }
+    }
+    
+    /// Check if assigning from source to target is a narrowing conversion
+    fn is_narrowing_conversion(&self, target: &TypeSpec, source: &TypeSpec) -> bool {
+        // Only check non-pointer numeric types
+        if target.pointer_depth > 0 || source.pointer_depth > 0 {
+            return false;
+        }
+        
+        if let (Some(target_size), Some(source_size)) = (
+            self.numeric_type_size(&target.base),
+            self.numeric_type_size(&source.base)
+        ) {
+            source_size > target_size
+        } else {
+            false
+        }
+    }
+    
+    /// Check if a type is signed
+    fn is_signed_type(&self, base: &BaseType) -> Option<bool> {
+        match base {
+            BaseType::Int8 | BaseType::Int16 | BaseType::Int32 | BaseType::Int64 |
+            BaseType::Int | BaseType::Long | BaseType::Short | BaseType::Char => Some(true),
+            BaseType::Uint8 | BaseType::Uint16 | BaseType::Uint32 | BaseType::Uint64 |
+            BaseType::UnsignedInt | BaseType::UnsignedLong | BaseType::UnsignedShort |
+            BaseType::UnsignedChar => Some(false),
+            _ => None,
+        }
+    }
+    
+    /// Check if comparing signed and unsigned types
+    fn is_signed_unsigned_comparison(&self, left: &TypeSpec, right: &TypeSpec) -> bool {
+        if left.pointer_depth > 0 || right.pointer_depth > 0 {
+            return false;
+        }
+        
+        if let (Some(left_signed), Some(right_signed)) = (
+            self.is_signed_type(&left.base),
+            self.is_signed_type(&right.base)
+        ) {
+            left_signed != right_signed
+        } else {
+            false
+        }
     }
 
     /// Convert type to string for error messages
